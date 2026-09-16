@@ -38,7 +38,8 @@ export default function SoapInput({
       <button
         type="button"
         onClick={onAnalyze}
-        disabled={isEmpty || isAnalyzing}
+        // disabled={isEmpty || isAnalyzing}
+        disabled={true}
         className="inline-flex items-center justify-center gap-2 self-start rounded-lg bg-teal-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-teal-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-500 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400"
       >
         {isAnalyzing && (
