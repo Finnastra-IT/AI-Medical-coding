@@ -7,11 +7,37 @@ import SoapInput from "@/components/SoapInput";
 import SummaryPanel, { SummaryPanelSkeleton } from "@/components/SummaryPanel";
 import CodesTable, { CodesTableSkeleton } from "@/components/CodesTable";
 import AccuracyBar from "@/components/AccuracyBar";
-import ErrorBanner from "@/components/ErrorBanner";
 import { analyzeNote, generateCodes, getErrorMessage } from "@/lib/api";
 import type { ClinicalSummary, CodeType, SuggestedCode } from "@/lib/types";
 
 let manualCodeCounter = 0;
+let optumCodeCounter = 0;
+
+function codesFromSummary(summary: ClinicalSummary): SuggestedCode[] {
+  const diagnosisCodes: SuggestedCode[] = summary.diagnoses
+    .filter((diagnosis) => diagnosis.icd10Hint)
+    .map((diagnosis) => ({
+      id: `ai-${diagnosis.id}`,
+      code: diagnosis.icd10Hint as string,
+      description: diagnosis.condition,
+      type: "ICD-10",
+      source: "AI",
+      status: "pending",
+    }));
+
+  const procedureCodes: SuggestedCode[] = summary.procedures
+    .filter((procedure) => procedure.cptHint)
+    .map((procedure) => ({
+      id: `ai-${procedure.id}`,
+      code: procedure.cptHint as string,
+      description: procedure.description,
+      type: "CPT",
+      source: "AI",
+      status: "pending",
+    }));
+
+  return [...diagnosisCodes, ...procedureCodes];
+}
 
 export default function Home() {
   const [soapNote, setSoapNote] = useState("");
@@ -19,7 +45,6 @@ export default function Home() {
   const [codes, setCodes] = useState<SuggestedCode[]>([]);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [isGeneratingCodes, setIsGeneratingCodes] = useState(false);
-  const [error, setError] = useState<string | null>(null);
 
   const currentStep = useMemo<1 | 2 | 3>(() => {
     if (codes.length > 0) return 3;
@@ -28,14 +53,15 @@ export default function Home() {
   }, [summary, codes]);
 
   async function handleAnalyze() {
-    setError(null);
     setIsAnalyzing(true);
     try {
       const result = await analyzeNote(soapNote);
       setSummary(result);
-      setCodes([]);
+      setCodes(codesFromSummary(result));
     } catch (err) {
-      setError(getErrorMessage(err, "Failed to analyze note. Please try again."));
+      toast.error(
+        getErrorMessage(err, "Failed to analyze note. Please try again.")
+      );
     } finally {
       setIsAnalyzing(false);
     }
@@ -43,14 +69,22 @@ export default function Home() {
 
   async function handleGenerateCodes() {
     if (!summary) return;
-    setError(null);
     setIsGeneratingCodes(true);
     try {
       const result = await generateCodes(summary);
-      setCodes(result);
+      setCodes((prev) => [
+        ...prev,
+        ...result.map((code) => {
+          optumCodeCounter += 1;
+          return { ...code, id: `optum-${optumCodeCounter}`, source: "Optum" as const };
+        }),
+      ]);
     } catch (err) {
-      setError(
-        getErrorMessage(err, "Failed to generate codes. Please try again.")
+      toast.error(
+        getErrorMessage(
+          err,
+          "Optum is not available yet. Please try again later."
+        )
       );
     } finally {
       setIsGeneratingCodes(false);
@@ -118,10 +152,6 @@ export default function Home() {
       <Header currentStep={currentStep} />
 
       <main className="mx-auto flex w-full max-w-7xl flex-1 flex-col gap-6 px-4 py-6 sm:px-6">
-        {error && (
-          <ErrorBanner message={error} onDismiss={() => setError(null)} />
-        )}
-
         <div className="flex flex-col gap-6 lg:flex-row">
           <div className="flex flex-1 lg:w-1/2">
             <SoapInput
@@ -141,14 +171,13 @@ export default function Home() {
                 onChange={setSummary}
                 onGenerateCodes={handleGenerateCodes}
                 isGeneratingCodes={isGeneratingCodes}
-                hasCodes={codes.length > 0}
               />
             )}
           </div>
         </div>
 
         {isGeneratingCodes && <CodesTableSkeleton />}
-        {!isGeneratingCodes && codes.length > 0 && (
+        {summary && !isGeneratingCodes && (
           <CodesTable
             codes={codes}
             isLoading={false}

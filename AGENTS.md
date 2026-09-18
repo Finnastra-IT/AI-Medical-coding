@@ -8,8 +8,13 @@ the same change** — treat it as part of the diff, not a follow-up.
 ## What this app is
 
 A single-page workspace for a medical coder: paste a SOAP note → AI-structured clinical
-summary → AI-suggested ICD-10/CPT codes → coder accepts/rejects/modifies/adds codes →
-live precision/recall accuracy tracking. See `src/app/page.tsx` for the end-to-end flow.
+summary, **with OpenAI already assigning an ICD-10/CPT code to each diagnosis and
+procedure as part of that same analysis (Step 1)** → those codes populate the Suggested
+Codes table automatically, no extra click needed → coder accepts/rejects/modifies/adds
+codes → optionally, "Get Codes via Optum" (Step 2, currently returns "coming soon" —
+see below) adds a second, independently-sourced set of coded suggestions into the same
+table → live precision/recall accuracy tracking. See `src/app/page.tsx` for the
+end-to-end flow, especially `codesFromSummary` (the Step 1 → codes-table bridge).
 
 ## Stack
 
@@ -38,33 +43,37 @@ live precision/recall accuracy tracking. See `src/app/page.tsx` for the end-to-e
 - `src/lib/api.ts` — the only place that calls `axios` / hits `/api/*`. Components and
   `page.tsx` call these functions, never `fetch`/`axios` directly. `getErrorMessage`
   centralizes turning a caught error into a user-facing string.
-- `src/lib/mockData.ts` — realistic mock summary/codes used by the API routes while
-  `MOCK_MODE=true`.
+- `src/lib/placeholders.ts` — `SOAP_NOTE_PLACEHOLDER`, the example text shown as the
+  textarea's `placeholder` in `SoapInput.tsx`. This is illustrative UI copy, not mock
+  data — **there is no mock data or `MOCK_MODE` anywhere in this app**; both routes
+  always hit their real backend (or report "coming soon" if it isn't wired up yet, see
+  below). Don't reintroduce a mock path without being explicitly asked.
 
-## API routes: one live, one still mocked
+## API routes: one live, one "coming soon"
 
-Both routes are gated by `MOCK_MODE` (`.env.local`/`.env.example`): `MOCK_MODE=true` (or
-unset) returns canned data after an artificial 1.5s delay; `MOCK_MODE=false` calls the
-real backend.
-
-- `POST /api/analyze` → **live**. When not mocked, it calls OpenAI via
-  `analyzeWithOpenAI` in `src/lib/openai.ts`, using `OPENAI_API_KEY` (and optional
-  `OPENAI_MODEL`, default `gpt-5.4-mini` — chosen for interactive-latency structured
-  extraction; bump to a `-pro` tier via env if accuracy matters more than speed) from
-  `process.env` — server-side only, never exposed to the client. It uses the Responses
-  API's `responses.parse` with `zodTextFormat(clinicalSummarySchema, ...)` (from
+- `POST /api/analyze` → **live, always**. Calls OpenAI via `analyzeWithOpenAI` in
+  `src/lib/openai.ts`, using `OPENAI_API_KEY` (and optional `OPENAI_MODEL`, default
+  `gpt-5.4-mini` — chosen for interactive-latency structured extraction; bump to a
+  `-pro` tier via env if accuracy matters more than speed) from `process.env` —
+  server-side only, never exposed to the client. It uses the Responses API's
+  `responses.parse` with `zodTextFormat(clinicalSummarySchema, ...)` (from
   `openai/helpers/zod`) for strict structured JSON output — the SDK validates against
   the schema and returns `response.output_parsed` already typed, so there's no manual
-  `JSON.parse`/`safeParse` step here (unlike a hand-rolled integration). On failure it
-  returns `502` with a message (no silent fallback to mock).
-- `POST /api/generate-codes` → still mocked. Real integration is Optum, gated on
-  `OPTUM_CLIENT_ID` / `OPTUM_CLIENT_SECRET`, not yet implemented — no credentials
-  configured yet. Follow the same pattern as `analyze` when wiring it up: a
-  `lib/optum.ts` helper, validate its output against the `SuggestedCode[]` shape, gate
-  on `MOCK_MODE`, return `502` on failure rather than silently mocking.
+  `JSON.parse`/`safeParse` step here. On failure it returns `502` with a message.
+- `POST /api/generate-codes` → **not implemented yet — always returns `501` with
+  `{ error: "Optum integration is coming soon." }`** after validating the request body.
+  This is intentional, not a bug: it's the optional Step 2 ("Get Codes via Optum"), and
+  real `OPTUM_CLIENT_ID` / `OPTUM_CLIENT_SECRET` credentials haven't been provisioned.
+  When they are, implement a `lib/optum.ts` helper following the same shape as
+  `lib/openai.ts` (validate its output against `SuggestedCode[]`, throw a clear `Error`
+  on failure so the route can map it to `502`), swap the `NextResponse.json(...501...)`
+  for the real call, and update this note — don't leave it saying "coming soon" once
+  it's live. The frontend already has correct handling for both outcomes (see
+  `handleGenerateCodes` in `page.tsx`): on success it appends returned codes to the
+  table tagged `source: "Optum"`; on failure it calls `toast.error(...)` with the
+  message. No frontend change should be needed to go live here.
 
-Keep the Zod validation at the top of each handler, keep the response shape identical
-to the mock (so the frontend doesn't need to change), and update `.env.example` (with a
+Keep the Zod validation at the top of each handler, and update `.env.example` (with a
 blank placeholder — never a real value) if you add new env vars.
 
 **Secret hygiene**: `.env.example` is tracked in git (see the `!.env.example` line in
@@ -84,17 +93,46 @@ and found lacking; consider a proper PHI/NER approach (or at least tightening th
 heuristic with real test notes before re-enabling a hard block) rather than restoring
 the same pattern unchanged.
 
+## Non-medical input is hard-rejected — the gate lives in the model, not a regex
+
+`POST /api/analyze` refuses to analyze input that isn't a genuine clinical note (a
+random question, an off-topic request, a prompt-injection attempt like "ignore
+previous instructions...", casual conversation, etc.). Unlike the PHI check above,
+this is **not** a regex pre-filter — the same OpenAI call already analyzing the note
+first decides `isMedicalNote`/`rejectionReason` (required fields on
+`openAiClinicalSummarySchema` in `lib/openai.ts`, instructed at the very top of
+`SYSTEM_INSTRUCTION`, before any of the actual analysis instructions). When the model
+says it isn't medical, `analyzeWithOpenAI` throws `NotMedicalNoteError` (exported from
+`lib/openai.ts`) with the model's one-sentence reason as the message; the route maps
+that specific error type to `400` (a real analysis failure stays `502`). The frontend
+needed zero changes for this — `handleAnalyze`'s existing catch block already turns
+any thrown error into a `toast.error(...)`, so the model's rejection reason surfaces
+as-is. If you ever need to tighten or loosen this gate, edit the instruction text and/
+or the examples of what counts as "not medical" — don't bolt on a separate regex/
+keyword check in front of it; that pattern already failed once for PHI detection (see
+above) for the same underlying reason: free text is too varied for a heuristic to gate
+reliably, and the model doing the analysis is already the best classifier available.
+
 ## Domain model quirks worth knowing
 
-- `Diagnosis.icd10Hint` and `Procedure.cptHint` still exist as optional fields on the
-  domain model (`types.ts`/`schemas.ts`), but are currently **not populated or shown**:
-  `lib/openai.ts`'s request schema and prompt deliberately omit them, and
-  `SummaryPanel.tsx`'s `DiagnosisEditor`/`ProcedureEditor` don't render an input for
-  them. This is intentional, not an oversight — actual coding is deferred to a
-  dedicated coding API (Optum) at the Generate Codes step; asking the analysis LLM to
-  guess codes it isn't authoritative for added noise without value. If/when that
-  changes, re-add the field to `openAiClinicalSummarySchema` + prompt and the UI in the
-  same change (don't leave one side stale).
+- `Diagnosis.icd10Hint` and `Procedure.cptHint` are populated by `lib/openai.ts`'s
+  prompt, which tells the model to assign its best-judgment ICD-10-CM / CPT code for
+  every diagnosis/procedure (not an omittable "hint" — only `null` when truly nothing
+  reasonable applies). The fields' internal names still say "Hint" even though they're
+  treated as a real assignment, not an optional guess — a minor naming mismatch, not a
+  bug. Shown in `SummaryPanel.tsx` as "ICD-10 Code" / "CPT Code" fields, **and** these
+  same values are what `codesFromSummary()` (`page.tsx`) turns into the initial
+  `source: "AI"` rows of the Suggested Codes table right after analysis — the two
+  displays share one source of truth, so don't let them drift (e.g. if you ever stop
+  requesting these fields from OpenAI, `codesFromSummary` will just produce fewer rows,
+  which is fine, but if you rename/restructure them, update `codesFromSummary` too).
+- `SuggestedCode.source` is `'AI' | 'Optum' | 'Manual'`. `'AI'` rows come from Step 1
+  (`codesFromSummary`, populated automatically on analyze). `'Optum'` rows come from
+  Step 2 (`handleGenerateCodes` in `page.tsx`, the optional "Get Codes via Optum"
+  button — currently always errors since `/api/generate-codes` isn't implemented, see
+  above). `'Manual'` is a coder-typed addition. Precision/Recall (`AccuracyBar.tsx`)
+  treat `'AI'` and `'Optum'` identically as "suggested" (i.e. not manually typed) —
+  see the formula note below.
 - `ClinicalSummary.briefSummary` — despite the name, this is a **crisp clinical
   impression, not a sentence**: a few words naming the primary diagnosis/complaint
   (e.g. "Lower back pain", "Type 2 diabetes with neuropathy"), the way a coder would
@@ -109,12 +147,20 @@ the same pattern unchanged.
 - `CodeStatus` is `'pending' | 'accepted' | 'rejected' | 'modified'`. `'modified'` is
   treated as "kept" for accuracy purposes, same as `'accepted'` — see
   `KEPT_STATUSES` in `src/components/AccuracyBar.tsx`.
-- Precision/Recall (`AccuracyBar.tsx`): `Precision = accepted-or-modified AI codes /
-  total AI-suggested codes`. `Recall = accepted-or-modified AI codes / all
-  accepted-or-modified codes (AI + Manual)`. If you change these formulas, update both
-  the code and this note.
+- Precision/Recall (`AccuracyBar.tsx`): `Precision = accepted-or-modified suggested
+  codes / total suggested codes`, where "suggested" means `source !== 'Manual'` (so
+  both `'AI'` and `'Optum'`). `Recall = accepted-or-modified suggested codes / all
+  accepted-or-modified codes (suggested + Manual)`. If you change these formulas,
+  update both the code and this note.
 - Manually added codes (`source: 'Manual'`) default to `status: 'accepted'` immediately
   (`handleAddManual` in `page.tsx`) since the coder is adding them directly.
+- `SummaryPanel.tsx`'s "Negations" field group is collapsed by default (a `useState`
+  toggle, `negationsOpen`) behind a small "+" button that rotates into an "×" when
+  open — this is deliberate, to keep the main summary view uncluttered; negations are
+  useful to confirm but rarely the coder's primary focus. `FieldGroup` takes an
+  optional `action` node rendered next to its label for this kind of per-section
+  control; follow that pattern (rather than a one-off layout) if another section needs
+  similar collapse/expand behavior.
 
 ## UI/styling conventions
 
@@ -129,6 +175,13 @@ the same pattern unchanged.
 - Mobile-first: components that render a table on desktop must also render a stacked
   card layout below the `sm` breakpoint (see `CodesTable.tsx`'s `CodeRow`/`CodeCard`
   split) rather than relying on horizontal scroll.
+- **API/action errors surface as toasts (`toast.error(...)` from `react-hot-toast`,
+  `Toaster` positioned `top-right` in `layout.tsx`), not an inline banner** — there
+  used to be a dismissible `ErrorBanner` at the top of the page for this; it was
+  removed because a banner pushed the whole layout down and got in the way right when
+  the coder was trying to look at the result that just came back. Keep new
+  error-reporting on this pattern rather than reintroducing a banner. Success toasts
+  (`toast.success(...)`, e.g. after Export) use the same `Toaster` instance.
 
 ## Verifying changes
 

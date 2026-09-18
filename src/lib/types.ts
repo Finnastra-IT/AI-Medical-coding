@@ -38,7 +38,7 @@ export interface ClinicalSummary {
 
 export type CodeType = "ICD-10" | "CPT";
 
-export type CodeSource = "AI" | "Manual";
+export type CodeSource = "AI" | "Optum" | "Manual";
 
 export type CodeStatus = "accepted" | "rejected" | "modified" | "pending";
 

@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import type { CodeType, SuggestedCode } from "@/lib/types";
+import EmptyState from "./EmptyState";
 
 interface CodesTableProps {
   codes: SuggestedCode[];
@@ -33,10 +34,6 @@ export default function CodesTable({
     return <CodesTableSkeleton />;
   }
 
-  if (codes.length === 0) {
-    return null;
-  }
-
   return (
     <section className="flex flex-col gap-4 rounded-xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
       <h2 className="text-sm font-semibold text-slate-900">
@@ -44,54 +41,68 @@ export default function CodesTable({
       </h2>
 
       <div className="hidden overflow-x-auto sm:block">
-        <table className="w-full min-w-[720px] table-auto border-collapse text-sm">
-          <thead>
-            <tr className="border-b border-slate-200 text-left text-xs uppercase tracking-wide text-slate-400">
-              <th className="py-2 pr-3 font-medium">Code</th>
-              <th className="py-2 pr-3 font-medium">Description</th>
-              <th className="py-2 pr-3 font-medium">Type</th>
-              <th className="py-2 pr-3 font-medium">Source</th>
-              <th className="py-2 pr-3 font-medium">Status</th>
-              <th className="py-2 pr-3 font-medium">Actions</th>
-            </tr>
-          </thead>
-          <tbody>
-            {codes.map((code) => (
-              <CodeRow
-                key={code.id}
-                code={code}
-                isEditing={editingId === code.id}
-                onStartEdit={() => setEditingId(code.id)}
-                onCancelEdit={() => setEditingId(null)}
-                onAccept={() => onAccept(code.id)}
-                onReject={() => onReject(code.id)}
-                onSaveModify={(nextCode, nextDescription) => {
-                  onModify(code.id, nextCode, nextDescription);
-                  setEditingId(null);
-                }}
-              />
-            ))}
-          </tbody>
-        </table>
+        {codes.length === 0 ? (
+          <EmptyState
+            title="No codes yet"
+            description="Add a code manually below, or get suggestions from Optum above."
+          />
+        ) : (
+          <table className="w-full min-w-[720px] table-auto border-collapse text-sm">
+            <thead>
+              <tr className="border-b border-slate-200 text-left text-xs uppercase tracking-wide text-slate-400">
+                <th className="py-2 pr-3 font-medium">Code</th>
+                <th className="py-2 pr-3 font-medium">Description</th>
+                <th className="py-2 pr-3 font-medium">Type</th>
+                <th className="py-2 pr-3 font-medium">Source</th>
+                <th className="py-2 pr-3 font-medium">Status</th>
+                <th className="py-2 pr-3 font-medium">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {codes.map((code) => (
+                <CodeRow
+                  key={code.id}
+                  code={code}
+                  isEditing={editingId === code.id}
+                  onStartEdit={() => setEditingId(code.id)}
+                  onCancelEdit={() => setEditingId(null)}
+                  onAccept={() => onAccept(code.id)}
+                  onReject={() => onReject(code.id)}
+                  onSaveModify={(nextCode, nextDescription) => {
+                    onModify(code.id, nextCode, nextDescription);
+                    setEditingId(null);
+                  }}
+                />
+              ))}
+            </tbody>
+          </table>
+        )}
         <AddCodeRow onAdd={onAddManual} variant="row" />
       </div>
 
       <div className="flex flex-col gap-3 sm:hidden">
-        {codes.map((code) => (
-          <CodeCard
-            key={code.id}
-            code={code}
-            isEditing={editingId === code.id}
-            onStartEdit={() => setEditingId(code.id)}
-            onCancelEdit={() => setEditingId(null)}
-            onAccept={() => onAccept(code.id)}
-            onReject={() => onReject(code.id)}
-            onSaveModify={(nextCode, nextDescription) => {
-              onModify(code.id, nextCode, nextDescription);
-              setEditingId(null);
-            }}
+        {codes.length === 0 ? (
+          <EmptyState
+            title="No codes yet"
+            description="Add a code manually below, or get suggestions from Optum above."
           />
-        ))}
+        ) : (
+          codes.map((code) => (
+            <CodeCard
+              key={code.id}
+              code={code}
+              isEditing={editingId === code.id}
+              onStartEdit={() => setEditingId(code.id)}
+              onCancelEdit={() => setEditingId(null)}
+              onAccept={() => onAccept(code.id)}
+              onReject={() => onReject(code.id)}
+              onSaveModify={(nextCode, nextDescription) => {
+                onModify(code.id, nextCode, nextDescription);
+                setEditingId(null);
+              }}
+            />
+          ))
+        )}
         <AddCodeRow onAdd={onAddManual} variant="card" />
       </div>
     </section>
@@ -129,14 +140,18 @@ function TypeBadge({ type }: { type: CodeType }) {
   );
 }
 
+const SOURCE_STYLES: Record<SuggestedCode["source"], string> = {
+  AI: "border-teal-200 bg-teal-50 text-teal-700",
+  Optum: "border-indigo-200 bg-indigo-50 text-indigo-700",
+  Manual: "border-slate-200 bg-slate-100 text-slate-600",
+};
+
 function SourceBadge({ source }: { source: SuggestedCode["source"] }) {
   return (
     <span
       className={[
         "inline-flex rounded-full border px-2 py-0.5 text-xs font-medium",
-        source === "AI"
-          ? "border-teal-200 bg-teal-50 text-teal-700"
-          : "border-slate-200 bg-slate-100 text-slate-600",
+        SOURCE_STYLES[source],
       ].join(" ")}
     >
       {source}

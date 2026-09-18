@@ -1,11 +1,13 @@
 import { NextResponse } from "next/server";
 import { generateCodesRequestSchema } from "@/lib/schemas";
-import { mockSuggestedCodes } from "@/lib/mockData";
 
-// TODO: Replace with Optum API call — read OPTUM_CLIENT_ID / OPTUM_CLIENT_SECRET
-// from process.env.
-
-const MOCK_DELAY_MS = 1500;
+// TODO: Replace with a real Optum API call once OPTUM_CLIENT_ID /
+// OPTUM_CLIENT_SECRET (process.env) are provisioned. This is the optional
+// "second opinion" step — Step 1 (POST /api/analyze) already assigns
+// ICD-10/CPT codes per diagnosis/procedure via OpenAI, and the frontend uses
+// those immediately; this endpoint exists for a coder who additionally wants
+// Optum-sourced suggestions. Until Optum is wired up, always report
+// "coming soon" rather than returning fake data.
 
 export async function POST(request: Request) {
   const body = await request.json().catch(() => null);
@@ -18,7 +20,8 @@ export async function POST(request: Request) {
     );
   }
 
-  await new Promise((resolve) => setTimeout(resolve, MOCK_DELAY_MS));
-
-  return NextResponse.json(mockSuggestedCodes);
+  return NextResponse.json(
+    { error: "Optum integration is coming soon." },
+    { status: 501 }
+  );
 }

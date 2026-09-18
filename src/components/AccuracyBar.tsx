@@ -8,19 +8,21 @@ interface AccuracyBarProps {
 const KEPT_STATUSES: SuggestedCode["status"][] = ["accepted", "modified"];
 
 export default function AccuracyBar({ codes, onExport }: AccuracyBarProps) {
-  const aiCodes = codes.filter((code) => code.source === "AI");
-  const acceptedAiCodes = aiCodes.filter((code) =>
+  // "Suggested" = algorithmically sourced (AI or Optum), as opposed to a code
+  // the coder typed in themselves.
+  const suggestedCodes = codes.filter((code) => code.source !== "Manual");
+  const acceptedSuggestedCodes = suggestedCodes.filter((code) =>
     KEPT_STATUSES.includes(code.status)
   );
   const finalCodes = codes.filter((code) => KEPT_STATUSES.includes(code.status));
 
   const precision =
-    aiCodes.length > 0
-      ? Math.round((acceptedAiCodes.length / aiCodes.length) * 100)
+    suggestedCodes.length > 0
+      ? Math.round((acceptedSuggestedCodes.length / suggestedCodes.length) * 100)
       : 0;
   const recall =
     finalCodes.length > 0
-      ? Math.round((acceptedAiCodes.length / finalCodes.length) * 100)
+      ? Math.round((acceptedSuggestedCodes.length / finalCodes.length) * 100)
       : 0;
 
   return (

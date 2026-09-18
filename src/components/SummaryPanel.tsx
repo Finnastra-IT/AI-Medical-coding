@@ -1,4 +1,6 @@
-import type { ReactNode } from "react";
+"use client";
+
+import { useState, type ReactNode } from "react";
 import type { ClinicalSummary, Diagnosis, Procedure } from "@/lib/types";
 import EmptyState from "./EmptyState";
 
@@ -7,7 +9,6 @@ interface SummaryPanelProps {
   onChange: (summary: ClinicalSummary) => void;
   onGenerateCodes: () => void;
   isGeneratingCodes: boolean;
-  hasCodes: boolean;
 }
 
 export default function SummaryPanel({
@@ -15,8 +16,9 @@ export default function SummaryPanel({
   onChange,
   onGenerateCodes,
   isGeneratingCodes,
-  hasCodes,
 }: SummaryPanelProps) {
+  const [negationsOpen, setNegationsOpen] = useState(false);
+
   return (
     <section className="flex flex-1 flex-col gap-4 rounded-xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
       <div className="flex items-center justify-between">
@@ -92,23 +94,42 @@ export default function SummaryPanel({
             </div>
           </FieldGroup>
 
-          <FieldGroup label="Negations">
-            <div className="flex flex-col gap-2">
-              {summary.negations.map((negation, index) => (
-                <TextField
-                  key={negation.id}
-                  value={negation.text}
-                  onChange={(value) => {
-                    const negations = [...summary.negations];
-                    negations[index] = { ...negations[index], text: value };
-                    onChange({ ...summary, negations });
-                  }}
+          <FieldGroup
+            label={`Negations (${summary.negations.length})`}
+            action={
+              <button
+                type="button"
+                onClick={() => setNegationsOpen((prev) => !prev)}
+                aria-expanded={negationsOpen}
+                aria-label={
+                  negationsOpen ? "Collapse negations" : "Expand negations"
+                }
+                className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-slate-200 text-slate-500 transition-colors hover:border-teal-300 hover:bg-teal-50 hover:text-teal-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-500"
+              >
+                <PlusIcon
+                  className={`h-3 w-3 transition-transform ${negationsOpen ? "rotate-45" : ""}`}
                 />
-              ))}
-              {summary.negations.length === 0 && (
-                <p className="text-xs text-slate-400">No negations found.</p>
-              )}
-            </div>
+              </button>
+            }
+          >
+            {negationsOpen && (
+              <div className="flex flex-col gap-2">
+                {summary.negations.map((negation, index) => (
+                  <TextField
+                    key={negation.id}
+                    value={negation.text}
+                    onChange={(value) => {
+                      const negations = [...summary.negations];
+                      negations[index] = { ...negations[index], text: value };
+                      onChange({ ...summary, negations });
+                    }}
+                  />
+                ))}
+                {summary.negations.length === 0 && (
+                  <p className="text-xs text-slate-400">No negations found.</p>
+                )}
+              </div>
+            )}
           </FieldGroup>
 
           <FieldGroup label="Needs Clarification">
@@ -140,40 +161,42 @@ export default function SummaryPanel({
             )}
           </FieldGroup>
 
-          <button
-            type="button"
-            onClick={onGenerateCodes}
-            disabled={isGeneratingCodes || hasCodes}
-            className="inline-flex items-center justify-center gap-2 self-start rounded-lg bg-teal-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-teal-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-500 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400"
-          >
-            {isGeneratingCodes && (
-              <svg
-                className="h-4 w-4 animate-spin"
-                viewBox="0 0 24 24"
-                fill="none"
-                aria-hidden="true"
-              >
-                <circle
-                  className="opacity-25"
-                  cx="12"
-                  cy="12"
-                  r="10"
-                  stroke="currentColor"
-                  strokeWidth={4}
-                />
-                <path
-                  className="opacity-75"
-                  fill="currentColor"
-                  d="M4 12a8 8 0 0 1 8-8v4a4 4 0 0 0-4 4H4Z"
-                />
-              </svg>
-            )}
-            {isGeneratingCodes
-              ? "Generating..."
-              : hasCodes
-                ? "Codes Generated"
-                : "Generate Codes"}
-          </button>
+          <div className="flex flex-col items-start gap-1.5">
+            <button
+              type="button"
+              onClick={onGenerateCodes}
+              disabled={isGeneratingCodes}
+              className="inline-flex items-center justify-center gap-2 self-start rounded-lg border border-teal-600 px-4 py-2 text-sm font-medium text-teal-700 transition-colors hover:bg-teal-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-500 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-400"
+            >
+              {isGeneratingCodes && (
+                <svg
+                  className="h-4 w-4 animate-spin"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  aria-hidden="true"
+                >
+                  <circle
+                    className="opacity-25"
+                    cx="12"
+                    cy="12"
+                    r="10"
+                    stroke="currentColor"
+                    strokeWidth={4}
+                  />
+                  <path
+                    className="opacity-75"
+                    fill="currentColor"
+                    d="M4 12a8 8 0 0 1 8-8v4a4 4 0 0 0-4 4H4Z"
+                  />
+                </svg>
+              )}
+              {isGeneratingCodes ? "Checking Optum..." : "Get Codes via Optum (Optional)"}
+            </button>
+            <p className="text-xs text-slate-400">
+              ICD-10/CPT codes above are already suggested by OpenAI. This
+              optionally adds a second set of coded suggestions from Optum.
+            </p>
+          </div>
         </div>
       )}
     </section>
@@ -198,16 +221,21 @@ export function SummaryPanelSkeleton() {
 
 function FieldGroup({
   label,
+  action,
   children,
 }: {
   label: string;
+  action?: ReactNode;
   children: ReactNode;
 }) {
   return (
     <div className="flex flex-col gap-2">
-      <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-400">
-        {label}
-      </h3>
+      <div className="flex items-center justify-between">
+        <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-400">
+          {label}
+        </h3>
+        {action}
+      </div>
       {children}
     </div>
   );
@@ -232,6 +260,23 @@ function TextField({
         className="w-full rounded-md border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-sm text-slate-800 focus:border-teal-500 focus:bg-white focus:outline-none focus:ring-2 focus:ring-teal-500/30"
       />
     </label>
+  );
+}
+
+function PlusIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={2.5}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      aria-hidden="true"
+    >
+      <path d="M12 5v14M5 12h14" />
+    </svg>
   );
 }
 
@@ -263,11 +308,22 @@ function DiagnosisEditor({
 }) {
   return (
     <div className="rounded-lg border border-slate-200 bg-slate-50/60 p-3">
-      <TextField
-        label="Condition"
-        value={diagnosis.condition}
-        onChange={(value) => onChange({ ...diagnosis, condition: value })}
-      />
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:gap-3">
+        <div className="flex-1">
+          <TextField
+            label="Condition"
+            value={diagnosis.condition}
+            onChange={(value) => onChange({ ...diagnosis, condition: value })}
+          />
+        </div>
+        <div className="w-full sm:w-32">
+          <TextField
+            label="ICD-10 Code"
+            value={diagnosis.icd10Hint ?? ""}
+            onChange={(value) => onChange({ ...diagnosis, icd10Hint: value })}
+          />
+        </div>
+      </div>
       {diagnosis.attributes.length > 0 && (
         <div className="mt-2 flex flex-wrap gap-2">
           {diagnosis.attributes.map((attribute, index) => (
@@ -305,12 +361,21 @@ function ProcedureEditor({
   onChange: (procedure: Procedure) => void;
 }) {
   return (
-    <div className="rounded-lg border border-slate-200 bg-slate-50/60 p-3">
-      <TextField
-        label="Description"
-        value={procedure.description}
-        onChange={(value) => onChange({ ...procedure, description: value })}
-      />
+    <div className="flex flex-col gap-2 rounded-lg border border-slate-200 bg-slate-50/60 p-3 sm:flex-row sm:items-start sm:gap-3">
+      <div className="flex-1">
+        <TextField
+          label="Description"
+          value={procedure.description}
+          onChange={(value) => onChange({ ...procedure, description: value })}
+        />
+      </div>
+      <div className="w-full sm:w-32">
+        <TextField
+          label="CPT Code"
+          value={procedure.cptHint ?? ""}
+          onChange={(value) => onChange({ ...procedure, cptHint: value })}
+        />
+      </div>
     </div>
   );
 }
