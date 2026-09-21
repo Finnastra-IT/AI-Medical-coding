@@ -353,6 +353,12 @@ function DiagnosisEditor({
   );
 }
 
+const CODE_TYPE_LABEL: Record<NonNullable<Procedure["codeType"]>, string> = {
+  CPT: "CPT Code",
+  HCPCS: "HCPCS Code",
+  "E/M": "E/M Code",
+};
+
 function ProcedureEditor({
   procedure,
   onChange,
@@ -360,21 +366,50 @@ function ProcedureEditor({
   procedure: Procedure;
   onChange: (procedure: Procedure) => void;
 }) {
+  const hasModifier = procedure.modifier !== undefined;
+  const hasUnits = procedure.units !== undefined;
+
   return (
-    <div className="flex flex-col gap-2 rounded-lg border border-slate-200 bg-slate-50/60 p-3 sm:flex-row sm:items-start sm:gap-3">
-      <div className="flex-1">
-        <TextField
-          label="Description"
-          value={procedure.description}
-          onChange={(value) => onChange({ ...procedure, description: value })}
-        />
-      </div>
-      <div className="w-full sm:w-32">
-        <TextField
-          label="CPT Code"
-          value={procedure.cptHint ?? ""}
-          onChange={(value) => onChange({ ...procedure, cptHint: value })}
-        />
+    <div className="flex flex-col gap-2 rounded-lg border border-slate-200 bg-slate-50/60 p-3">
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:gap-3">
+        <div className="flex-1">
+          <TextField
+            label="Description"
+            value={procedure.description}
+            onChange={(value) => onChange({ ...procedure, description: value })}
+          />
+        </div>
+        <div className="w-full sm:w-32">
+          <TextField
+            label={CODE_TYPE_LABEL[procedure.codeType ?? "CPT"]}
+            value={procedure.cptHint ?? ""}
+            onChange={(value) => onChange({ ...procedure, cptHint: value })}
+          />
+        </div>
+        {hasModifier && (
+          <div className="w-full sm:w-20">
+            <TextField
+              label="Modifier"
+              value={procedure.modifier ?? ""}
+              onChange={(value) => onChange({ ...procedure, modifier: value })}
+            />
+          </div>
+        )}
+        {hasUnits && (
+          <div className="w-full sm:w-20">
+            <TextField
+              label="Units"
+              value={String(procedure.units ?? "")}
+              onChange={(value) => {
+                const units = Number(value);
+                onChange({
+                  ...procedure,
+                  units: Number.isFinite(units) ? units : procedure.units,
+                });
+              }}
+            />
+          </div>
+        )}
       </div>
     </div>
   );

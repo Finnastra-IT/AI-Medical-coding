@@ -8,13 +8,19 @@ the same change** — treat it as part of the diff, not a follow-up.
 ## What this app is
 
 A single-page workspace for a medical coder: paste a SOAP note → AI-structured clinical
-summary, **with OpenAI already assigning an ICD-10/CPT code to each diagnosis and
-procedure as part of that same analysis (Step 1)** → those codes populate the Suggested
-Codes table automatically, no extra click needed → coder accepts/rejects/modifies/adds
-codes → optionally, "Get Codes via Optum" (Step 2, currently returns "coming soon" —
-see below) adds a second, independently-sourced set of coded suggestions into the same
-table → live precision/recall accuracy tracking. See `src/app/page.tsx` for the
-end-to-end flow, especially `codesFromSummary` (the Step 1 → codes-table bridge).
+summary, **with OpenAI already assigning a code to each diagnosis and procedure as part
+of that same analysis (Step 1)** → those codes populate the Suggested Codes table
+automatically, no extra click needed → coder accepts/rejects/modifies/adds codes →
+optionally, "Get Codes via Optum" (Step 2, currently returns "coming soon" — see below)
+adds a second, independently-sourced set of coded suggestions into the same table →
+live precision/recall accuracy tracking. See `src/app/page.tsx` for the end-to-end
+flow, especially `codesFromSummary` (the Step 1 → codes-table bridge).
+
+Codes aren't limited to plain ICD-10/CPT: the model also distinguishes the encounter's
+own **E/M code** (evaluation & management level, e.g. 99214) from other **CPT** Level I
+procedures and from **HCPCS Level II** codes (alphanumeric, for drugs/supplies/DME/
+ambulance), and attaches a **modifier** and/or **units** to a procedure when the note
+supports one. See "Domain model quirks worth knowing" below for the full shape.
 
 ## Stack
 
@@ -116,16 +122,40 @@ reliably, and the model doing the analysis is already the best classifier availa
 ## Domain model quirks worth knowing
 
 - `Diagnosis.icd10Hint` and `Procedure.cptHint` are populated by `lib/openai.ts`'s
-  prompt, which tells the model to assign its best-judgment ICD-10-CM / CPT code for
-  every diagnosis/procedure (not an omittable "hint" — only `null` when truly nothing
-  reasonable applies). The fields' internal names still say "Hint" even though they're
-  treated as a real assignment, not an optional guess — a minor naming mismatch, not a
-  bug. Shown in `SummaryPanel.tsx` as "ICD-10 Code" / "CPT Code" fields, **and** these
-  same values are what `codesFromSummary()` (`page.tsx`) turns into the initial
+  prompt with a strict priority order: **(1)** if the note itself already states a
+  code for that diagnosis/procedure, the model must carry it through verbatim — never
+  replace or "correct" a code the note already provides; **(2)** otherwise, assign
+  the model's own best-judgment code, but only when it's genuinely confident;
+  **(3)** if it isn't confident, leave the field `null` rather than guess. This was a
+  deliberate tightening — an earlier version of the prompt said "give your best
+  judgment, only null if truly nothing applies," which pushed the model to fabricate
+  a plausible-looking code under uncertainty instead of admitting it didn't know. A
+  blank code a coder fills in themselves is safer than a wrong one they miss. The
+  fields' internal names still say "Hint" even though a note-supplied code is treated
+  as authoritative, not a guess — a minor naming mismatch, not a bug. Shown in
+  `SummaryPanel.tsx` as "ICD-10 Code" / "CPT Code" / "HCPCS Code" /
+  "E/M Code" fields (label picked dynamically from `codeType`), **and** these same
+  values are what `codesFromSummary()` (`page.tsx`) turns into the initial
   `source: "AI"` rows of the Suggested Codes table right after analysis — the two
   displays share one source of truth, so don't let them drift (e.g. if you ever stop
   requesting these fields from OpenAI, `codesFromSummary` will just produce fewer rows,
   which is fine, but if you rename/restructure them, update `codesFromSummary` too).
+- `Procedure.codeType?: "CPT" | "HCPCS" | "E/M"` (absent = "CPT") tells you which code
+  family `cptHint` is drawn from. The model is instructed to give the encounter's own
+  E/M visit level its own `procedures` entry (`codeType: "E/M"`) alongside — not instead
+  of — any other procedures performed, and to classify drugs/supplies/DME/ambulance as
+  `"HCPCS"` rather than `"CPT"`. `Procedure.modifier` (e.g. `"25"`, `"59"`, `"RT"`) and
+  `Procedure.units` are both optional and only populated when the note's circumstances
+  genuinely call for one — the model is told not to default `units` to `1` or invent a
+  modifier just to fill the field. `CodeType`/`SuggestedCode` carry the same
+  `modifier`/`units` fields for the codes table; `codesFromSummary` passes them through
+  unchanged. Manual codes support the same fields via `AddCodeRow` in `CodesTable.tsx`
+  (its type select includes all four `CodeType`s; modifier/units inputs only appear for
+  non-ICD-10 types, since modifiers/units are a CPT/HCPCS/E-M concept, not a diagnosis
+  one). In the table, the Modifier/Units columns themselves only render when at least
+  one visible code actually has one (`hasModifierOrUnits` in `CodesTable.tsx`) — this is
+  the same "shown in UI if the details are present" pattern as collapsed Negations
+  below, so a note with no modifiers/units doesn't grow two dash-filled columns.
 - `SuggestedCode.source` is `'AI' | 'Optum' | 'Manual'`. `'AI'` rows come from Step 1
   (`codesFromSummary`, populated automatically on analyze). `'Optum'` rows come from
   Step 2 (`handleGenerateCodes` in `page.tsx`, the optional "Get Codes via Optum"

@@ -31,9 +31,11 @@ function codesFromSummary(summary: ClinicalSummary): SuggestedCode[] {
       id: `ai-${procedure.id}`,
       code: procedure.cptHint as string,
       description: procedure.description,
-      type: "CPT",
+      type: procedure.codeType ?? "CPT",
       source: "AI",
       status: "pending",
+      modifier: procedure.modifier,
+      units: procedure.units,
     }));
 
   return [...diagnosisCodes, ...procedureCodes];
@@ -122,7 +124,13 @@ export default function Home() {
     );
   }
 
-  function handleAddManual(code: string, description: string, type: CodeType) {
+  function handleAddManual(
+    code: string,
+    description: string,
+    type: CodeType,
+    modifier?: string,
+    units?: number
+  ) {
     manualCodeCounter += 1;
     setCodes((prev) => [
       ...prev,
@@ -133,6 +141,8 @@ export default function Home() {
         type,
         source: "Manual",
         status: "accepted",
+        modifier,
+        units,
       },
     ]);
   }

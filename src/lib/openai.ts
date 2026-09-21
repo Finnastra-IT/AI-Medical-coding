@@ -42,6 +42,9 @@ const openAiClinicalSummarySchema = z.object({
       id: z.string(),
       description: z.string(),
       cptHint: z.string().nullable(),
+      codeType: z.enum(["CPT", "HCPCS", "E/M"]).nullable(),
+      modifier: z.string().nullable(),
+      units: z.number().nullable(),
     })
   ),
   negations: z.array(z.object({ id: z.string(), text: z.string() })),
@@ -87,15 +90,56 @@ the full analysis below.
   never a full sentence with a verb.
 - "diagnoses": each distinct diagnosis, with a short unique "id" (e.g. "dx-1"), any
   explicit attributes (status, severity, laterality, relevant values) as
-  label/value pairs, and "icd10Hint": the single most appropriate ICD-10-CM
-  diagnosis code for this condition, using your full coding knowledge and the
-  specificity available in the note (e.g. laterality, episode of care, severity —
-  reflect it in the code when the note supports it). Give your best professional
-  judgment; only return null if truly no ICD-10 code could reasonably apply.
-- "procedures": each procedure performed or ordered, with a short unique "id"
-  (e.g. "px-1"), and "cptHint": the single most appropriate CPT (or HCPCS)
-  procedure code for it, same standard as above — your best judgment, null only
-  when nothing reasonably applies.
+  label/value pairs, and "icd10Hint":
+  - If the note itself already states a code for this diagnosis (e.g. "ICD-10:
+    J44.1", "dx code E11.9"), use that exact code verbatim. Never replace,
+    "correct", or second-guess a code the note already provides — carry it
+    through as-is even if you would have picked a different one.
+  - Otherwise, assign your own best-judgment ICD-10-CM code using the
+    specificity available in the note (laterality, episode of care, severity —
+    reflect it in the code when the note supports it), but only when you are
+    genuinely confident it's correct.
+  - If you are not confident — the note doesn't give you enough to pick a
+    specific code, or you're genuinely unsure — set "icd10Hint" to null. A
+    blank code is better than a wrong one; never fabricate or guess a code
+    just to fill the field.
+- "procedures": each procedure, service, supply, or billable item performed,
+  administered, or ordered — including the encounter's own Evaluation &
+  Management (E/M) service when one applies (see below) — with a short unique
+  "id" (e.g. "px-1"), and:
+  - "cptHint":
+    - If the note itself already states a code for this procedure/item, use
+      that exact code verbatim — never replace, "correct", or second-guess a
+      code the note already provides. Infer "codeType" from its format (see
+      below) rather than assigning a different code of your own.
+    - Otherwise, assign your own best-judgment code, but only when you are
+      genuinely confident it's correct.
+    - If you are not confident, set "cptHint" to null rather than guessing —
+      a blank code is better than a wrong one.
+  - "codeType": which code set "cptHint" is drawn from —
+    - "E/M": the visit's own evaluation & management code (e.g. 99202-99215
+      for office visits, 99221-99239 for inpatient) reflecting the
+      encounter type and complexity/level of service described. Include this
+      as its own procedures entry whenever the encounter involves a
+      provider evaluating/managing the patient (most encounters) — in
+      addition to, not instead of, any other procedures performed.
+    - "HCPCS": Level II alphanumeric codes (one letter + 4 digits, e.g.
+      "J3301", "A4253") for drugs/injectables, medical supplies, DME, or
+      ambulance/transport services — anything that isn't a physician
+      procedure or exam.
+    - "CPT": Level I codes (5 digits) for physician procedures, surgeries,
+      and exams that aren't the visit's own E/M code.
+    Default to "CPT" (or omit) when the distinction genuinely doesn't apply.
+  - "modifier": if the note already states a modifier explicitly, use it
+    verbatim. Otherwise, add a two-character CPT/HCPCS modifier (e.g. "25" —
+    significant, separately identifiable E/M on the same day as a procedure;
+    "59" — distinct procedural service; "50" — bilateral; "RT"/"LT" —
+    laterality) ONLY when the note's circumstances clearly call for one. null
+    otherwise — do not guess or invent a modifier just to fill the field.
+  - "units": the quantity performed/administered ONLY when the note states a
+    repeated or multi-unit service (e.g. "3 trigger point injections",
+    "60 minutes" for a service billed in 15-minute units → 4). null when the
+    service was performed once (do not default this to 1).
 - "negations": things the note explicitly says did NOT occur or were denied (e.g.
   "denies chest pain"), each with a short unique "id" (e.g. "neg-1"). Diagnostic
   uncertainty (an unconfirmed or differential diagnosis) is NOT a negation — that
@@ -133,7 +177,12 @@ export async function analyzeWithOpenAI(
     model: process.env.OPENAI_MODEL || DEFAULT_MODEL,
     instructions: SYSTEM_INSTRUCTION,
     input: soapNote,
-    temperature: 0.2,
+    // No `temperature` here: newer/reasoning-tier models (this app has been
+    // tested against gpt-5.6-sol) reject the param outright with a 400. It
+    // only affects run-to-run determinism, not correctness, and the strict
+    // JSON schema below already constrains output shape — so it's safe to
+    // omit rather than special-case per model. Re-add it only behind a
+    // try/model-capability check if determinism becomes an actual problem.
     text: {
       format: zodTextFormat(openAiClinicalSummarySchema, "clinical_summary"),
     },
@@ -166,6 +215,9 @@ export async function analyzeWithOpenAI(
     procedures: raw.procedures.map((procedure) => ({
       ...procedure,
       cptHint: procedure.cptHint ?? undefined,
+      codeType: procedure.codeType ?? undefined,
+      modifier: procedure.modifier ?? undefined,
+      units: procedure.units ?? undefined,
     })),
     negations: raw.negations,
     clarificationsNeeded: raw.clarificationsNeeded,

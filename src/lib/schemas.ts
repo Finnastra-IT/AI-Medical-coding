@@ -20,6 +20,9 @@ const procedureSchema = z.object({
   id: z.string(),
   description: z.string(),
   cptHint: z.string().optional(),
+  codeType: z.enum(["CPT", "HCPCS", "E/M"]).optional(),
+  modifier: z.string().optional(),
+  units: z.number().optional(),
 });
 
 const negationSchema = z.object({

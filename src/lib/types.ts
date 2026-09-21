@@ -16,10 +16,18 @@ export interface Diagnosis {
   attributes: DiagnosisAttribute[];
 }
 
+export type ProcedureCodeType = "CPT" | "HCPCS" | "E/M";
+
 export interface Procedure {
   id: string;
   description: string;
   cptHint?: string;
+  /** Which code family `cptHint` belongs to. Absent is treated as "CPT". */
+  codeType?: ProcedureCodeType;
+  /** e.g. "25", "59", "RT" — only present when the note supports one. */
+  modifier?: string;
+  /** Quantity billed. Absent/1 means "not worth showing", not "zero". */
+  units?: number;
 }
 
 export interface Negation {
@@ -36,7 +44,7 @@ export interface ClinicalSummary {
   clarificationsNeeded: string[];
 }
 
-export type CodeType = "ICD-10" | "CPT";
+export type CodeType = "ICD-10" | "CPT" | "HCPCS" | "E/M";
 
 export type CodeSource = "AI" | "Optum" | "Manual";
 
@@ -49,6 +57,10 @@ export interface SuggestedCode {
   type: CodeType;
   source: CodeSource;
   status: CodeStatus;
+  /** e.g. "25", "59", "RT" — only present when applicable. */
+  modifier?: string;
+  /** Quantity billed. Absent/1 means "not worth showing", not "zero". */
+  units?: number;
 }
 
 export interface AnalyzeRequest {

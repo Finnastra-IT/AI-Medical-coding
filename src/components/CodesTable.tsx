@@ -10,8 +10,19 @@ interface CodesTableProps {
   onAccept: (id: string) => void;
   onReject: (id: string) => void;
   onModify: (id: string, code: string, description: string) => void;
-  onAddManual: (code: string, description: string, type: CodeType) => void;
+  onAddManual: (
+    code: string,
+    description: string,
+    type: CodeType,
+    modifier?: string,
+    units?: number
+  ) => void;
 }
+
+// Modifier/units only apply to CPT/HCPCS/E-M codes, never ICD-10 — see
+// AGENTS.md "Domain model quirks worth knowing".
+const hasModifierOrUnits = (codes: SuggestedCode[]) =>
+  codes.some((code) => code.modifier !== undefined || code.units !== undefined);
 
 const STATUS_STYLES: Record<SuggestedCode["status"], string> = {
   accepted: "bg-green-50 text-green-700 border-green-200",
@@ -29,6 +40,7 @@ export default function CodesTable({
   onAddManual,
 }: CodesTableProps) {
   const [editingId, setEditingId] = useState<string | null>(null);
+  const showModifierUnits = hasModifierOrUnits(codes);
 
   if (isLoading) {
     return <CodesTableSkeleton />;
@@ -53,6 +65,12 @@ export default function CodesTable({
                 <th className="py-2 pr-3 font-medium">Code</th>
                 <th className="py-2 pr-3 font-medium">Description</th>
                 <th className="py-2 pr-3 font-medium">Type</th>
+                {showModifierUnits && (
+                  <>
+                    <th className="py-2 pr-3 font-medium">Modifier</th>
+                    <th className="py-2 pr-3 font-medium">Units</th>
+                  </>
+                )}
                 <th className="py-2 pr-3 font-medium">Source</th>
                 <th className="py-2 pr-3 font-medium">Status</th>
                 <th className="py-2 pr-3 font-medium">Actions</th>
@@ -63,6 +81,7 @@ export default function CodesTable({
                 <CodeRow
                   key={code.id}
                   code={code}
+                  showModifierUnits={showModifierUnits}
                   isEditing={editingId === code.id}
                   onStartEdit={() => setEditingId(code.id)}
                   onCancelEdit={() => setEditingId(null)}
@@ -125,14 +144,19 @@ export function CodesTableSkeleton() {
   );
 }
 
+const TYPE_STYLES: Record<CodeType, string> = {
+  "ICD-10": "border-sky-200 bg-sky-50 text-sky-700",
+  CPT: "border-violet-200 bg-violet-50 text-violet-700",
+  HCPCS: "border-amber-200 bg-amber-50 text-amber-700",
+  "E/M": "border-teal-200 bg-teal-50 text-teal-700",
+};
+
 function TypeBadge({ type }: { type: CodeType }) {
   return (
     <span
       className={[
         "inline-flex rounded-full border px-2 py-0.5 text-xs font-medium",
-        type === "ICD-10"
-          ? "border-sky-200 bg-sky-50 text-sky-700"
-          : "border-violet-200 bg-violet-50 text-violet-700",
+        TYPE_STYLES[type],
       ].join(" ")}
     >
       {type}
@@ -293,17 +317,18 @@ interface RowSharedProps {
 
 function CodeRow({
   code,
+  showModifierUnits,
   isEditing,
   onStartEdit,
   onCancelEdit,
   onAccept,
   onReject,
   onSaveModify,
-}: RowSharedProps) {
+}: RowSharedProps & { showModifierUnits: boolean }) {
   return (
     <tr className="border-b border-slate-100 align-top last:border-b-0">
       {isEditing ? (
-        <td colSpan={6} className="py-2.5 pr-3">
+        <td colSpan={showModifierUnits ? 8 : 6} className="py-2.5 pr-3">
           <ModifyForm
             initialCode={code.code}
             initialDescription={code.description}
@@ -320,6 +345,16 @@ function CodeRow({
           <td className="py-2.5 pr-3">
             <TypeBadge type={code.type} />
           </td>
+          {showModifierUnits && (
+            <>
+              <td className="py-2.5 pr-3 font-mono text-sm text-slate-600">
+                {code.modifier ?? "—"}
+              </td>
+              <td className="py-2.5 pr-3 text-slate-600">
+                {code.units ?? "—"}
+              </td>
+            </>
+          )}
           <td className="py-2.5 pr-3">
             <SourceBadge source={code.source} />
           </td>
@@ -370,9 +405,19 @@ function CodeCard({
             </div>
             <StatusBadge status={code.status} />
           </div>
-          <div className="mt-2 flex items-center gap-2">
+          <div className="mt-2 flex flex-wrap items-center gap-2">
             <TypeBadge type={code.type} />
             <SourceBadge source={code.source} />
+            {code.modifier !== undefined && (
+              <span className="text-xs text-slate-500">
+                Mod: <span className="font-mono">{code.modifier}</span>
+              </span>
+            )}
+            {code.units !== undefined && (
+              <span className="text-xs text-slate-500">
+                Units: <span className="font-mono">{code.units}</span>
+              </span>
+            )}
           </div>
           <div className="mt-3">
             <RowActions
@@ -393,26 +438,47 @@ function AddCodeRow({
   onAdd,
   variant,
 }: {
-  onAdd: (code: string, description: string, type: CodeType) => void;
+  onAdd: (
+    code: string,
+    description: string,
+    type: CodeType,
+    modifier?: string,
+    units?: number
+  ) => void;
   variant: "row" | "card";
 }) {
   const [isAdding, setIsAdding] = useState(false);
   const [code, setCode] = useState("");
   const [description, setDescription] = useState("");
   const [type, setType] = useState<CodeType>("ICD-10");
+  const [modifier, setModifier] = useState("");
+  const [units, setUnits] = useState("");
 
   const reset = () => {
     setIsAdding(false);
     setCode("");
     setDescription("");
     setType("ICD-10");
+    setModifier("");
+    setUnits("");
   };
 
   const canSubmit = code.trim().length > 0 && description.trim().length > 0;
+  // Modifier/units only make sense for billable service codes, not diagnoses.
+  const showServiceFields = type !== "ICD-10";
 
   const submit = () => {
     if (!canSubmit) return;
-    onAdd(code.trim(), description.trim(), type);
+    const parsedUnits = Number(units);
+    onAdd(
+      code.trim(),
+      description.trim(),
+      type,
+      showServiceFields && modifier.trim() ? modifier.trim() : undefined,
+      showServiceFields && units.trim() && Number.isFinite(parsedUnits)
+        ? parsedUnits
+        : undefined
+    );
     reset();
   };
 
@@ -443,6 +509,8 @@ function AddCodeRow({
       >
         <option value="ICD-10">ICD-10</option>
         <option value="CPT">CPT</option>
+        <option value="HCPCS">HCPCS</option>
+        <option value="E/M">E/M</option>
       </select>
       <input
         type="text"
@@ -460,6 +528,27 @@ function AddCodeRow({
         aria-label="New code description"
         className="w-full flex-1 rounded-md border border-slate-200 bg-white px-2 py-1 text-sm focus:border-teal-500 focus:outline-none focus:ring-2 focus:ring-teal-500/30"
       />
+      {showServiceFields && (
+        <>
+          <input
+            type="text"
+            value={modifier}
+            onChange={(event) => setModifier(event.target.value)}
+            placeholder="Modifier"
+            aria-label="New code modifier"
+            className="w-full rounded-md border border-slate-200 bg-white px-2 py-1 text-sm focus:border-teal-500 focus:outline-none focus:ring-2 focus:ring-teal-500/30 sm:w-20"
+          />
+          <input
+            type="number"
+            min={1}
+            value={units}
+            onChange={(event) => setUnits(event.target.value)}
+            placeholder="Units"
+            aria-label="New code units"
+            className="w-full rounded-md border border-slate-200 bg-white px-2 py-1 text-sm focus:border-teal-500 focus:outline-none focus:ring-2 focus:ring-teal-500/30 sm:w-20"
+          />
+        </>
+      )}
       <div className="flex items-center gap-1.5 self-end sm:self-auto">
         <button
           type="button"
