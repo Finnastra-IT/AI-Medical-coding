@@ -6,7 +6,6 @@ import Header from "@/components/Header";
 import SoapInput from "@/components/SoapInput";
 import SummaryPanel, { SummaryPanelSkeleton } from "@/components/SummaryPanel";
 import CodesTable, { CodesTableSkeleton } from "@/components/CodesTable";
-import AccuracyBar from "@/components/AccuracyBar";
 import { analyzeNote, generateCodes, getErrorMessage } from "@/lib/api";
 import type { ClinicalSummary, CodeType, SuggestedCode } from "@/lib/types";
 
@@ -22,7 +21,6 @@ function codesFromSummary(summary: ClinicalSummary): SuggestedCode[] {
       description: diagnosis.condition,
       type: "ICD-10",
       source: "AI",
-      status: "pending",
     }));
 
   const procedureCodes: SuggestedCode[] = summary.procedures
@@ -33,7 +31,6 @@ function codesFromSummary(summary: ClinicalSummary): SuggestedCode[] {
       description: procedure.description,
       type: procedure.codeType ?? "CPT",
       source: "AI",
-      status: "pending",
       modifier: procedure.modifier,
       units: procedure.units,
     }));
@@ -93,37 +90,6 @@ export default function Home() {
     }
   }
 
-  function handleAccept(id: string) {
-    setCodes((prev) =>
-      prev.map((code) =>
-        code.id === id ? { ...code, status: "accepted" } : code
-      )
-    );
-  }
-
-  function handleReject(id: string) {
-    setCodes((prev) =>
-      prev.map((code) =>
-        code.id === id ? { ...code, status: "rejected" } : code
-      )
-    );
-  }
-
-  function handleModify(id: string, nextCode: string, nextDescription: string) {
-    setCodes((prev) =>
-      prev.map((code) =>
-        code.id === id
-          ? {
-              ...code,
-              code: nextCode,
-              description: nextDescription,
-              status: "modified",
-            }
-          : code
-      )
-    );
-  }
-
   function handleAddManual(
     code: string,
     description: string,
@@ -140,7 +106,6 @@ export default function Home() {
         description,
         type,
         source: "Manual",
-        status: "accepted",
         modifier,
         units,
       },
@@ -191,17 +156,11 @@ export default function Home() {
           <CodesTable
             codes={codes}
             isLoading={false}
-            onAccept={handleAccept}
-            onReject={handleReject}
-            onModify={handleModify}
             onAddManual={handleAddManual}
+            onExport={handleExport}
           />
         )}
       </main>
-
-      {codes.length > 0 && !isGeneratingCodes && (
-        <AccuracyBar codes={codes} onExport={handleExport} />
-      )}
     </div>
   );
 }

@@ -48,15 +48,12 @@ export type CodeType = "ICD-10" | "CPT" | "HCPCS" | "E/M";
 
 export type CodeSource = "AI" | "Optum" | "Manual";
 
-export type CodeStatus = "accepted" | "rejected" | "modified" | "pending";
-
 export interface SuggestedCode {
   id: string;
   code: string;
   description: string;
   type: CodeType;
   source: CodeSource;
-  status: CodeStatus;
   /** e.g. "25", "59", "RT" — only present when applicable. */
   modifier?: string;
   /** Quantity billed. Absent/1 means "not worth showing", not "zero". */

@@ -7,20 +7,27 @@ the same change** — treat it as part of the diff, not a follow-up.
 
 ## What this app is
 
-A single-page workspace for a medical coder: paste a SOAP note → AI-structured clinical
-summary, **with OpenAI already assigning a code to each diagnosis and procedure as part
-of that same analysis (Step 1)** → those codes populate the Suggested Codes table
-automatically, no extra click needed → coder accepts/rejects/modifies/adds codes →
-optionally, "Get Codes via Optum" (Step 2, currently returns "coming soon" — see below)
-adds a second, independently-sourced set of coded suggestions into the same table →
-live precision/recall accuracy tracking. See `src/app/page.tsx` for the end-to-end
-flow, especially `codesFromSummary` (the Step 1 → codes-table bridge).
+A single-page **reference tool** for a medical coder: paste a SOAP note → AI-structured
+clinical summary, **with OpenAI already assigning a code to each diagnosis and
+procedure as part of that same analysis (Step 1)** → those codes populate the Suggested
+Codes table automatically, no extra click needed → coder can add a code manually if the
+AI missed one → optionally, "Get Codes via Optum" (Step 2, currently returns "coming
+soon" — see below) adds a second, independently-sourced set of coded suggestions into
+the same table. See `src/app/page.tsx` for the end-to-end flow, especially
+`codesFromSummary` (the Step 1 → codes-table bridge).
+
+This is deliberately **reference-only, not a review workflow**: the app does not track
+accept/reject/modify decisions or any accuracy score — see "Reference-only tool" below
+for what used to be here and why it was removed.
 
 Codes aren't limited to plain ICD-10/CPT: the model also distinguishes the encounter's
 own **E/M code** (evaluation & management level, e.g. 99214) from other **CPT** Level I
 procedures and from **HCPCS Level II** codes (alphanumeric, for drugs/supplies/DME/
 ambulance), and attaches a **modifier** and/or **units** to a procedure when the note
 supports one. See "Domain model quirks worth knowing" below for the full shape.
+
+The model doesn't just transcribe whatever code the note already has, either — see
+"Codes are validated, not copied" below.
 
 ## Stack
 
@@ -119,21 +126,50 @@ keyword check in front of it; that pattern already failed once for PHI detection
 above) for the same underlying reason: free text is too varied for a heuristic to gate
 reliably, and the model doing the analysis is already the best classifier available.
 
+## Reference-only tool — accept/reject/modify workflow and accuracy tracking removed
+
+Earlier versions of this app had a full review workflow: each Suggested Code row had
+Accept/Reject/Modify buttons (`RowActions`, `ModifyForm` in `CodesTable.tsx`), a
+`CodeStatus` (`'pending' | 'accepted' | 'rejected' | 'modified'`) on every
+`SuggestedCode`, and a sticky bottom `AccuracyBar` computing live Precision/Recall from
+those statuses. **All of that was removed** — there is no `CodeStatus` field, no
+accept/reject/modify actions, and no `AccuracyBar` component. The app now just displays
+what the AI (and optionally Optum) suggests, plus whatever the coder adds manually via
+"Add missed code"; the coder acts on the codes outside this tool. This was an explicit
+product decision ("this platform is for reference only"), not an oversight — don't
+reintroduce status tracking, row actions, or an accuracy/precision-recall score without
+being asked again, even though it's a natural-looking feature to add back. The "Export
+Summary" button (still present, now in `CodesTable.tsx`'s header) survived the removal
+since it's a separate feature from accuracy tracking.
+
+## Codes are validated, not copied
+
+`lib/openai.ts`'s prompt does NOT treat a code already written in the note as
+automatically correct. Providers can mis-code too (wrong specificity, stale copy-paste
+from another visit, etc.), so for both `Diagnosis.icd10Hint` and `Procedure.cptHint` the
+model is instructed to independently work out the correct code from what's actually
+documented, then compare that against any code the note already states:
+- If they agree, use the note's code.
+- If they disagree, use the code the model determined to be correct, and add a
+  `clarificationsNeeded` item flagging the discrepancy in plain language so the coder
+  knows to double-check it with the provider — the model doesn't silently overwrite a
+  provider's code without a trace.
+- If the model can't confidently determine a correct code either way, the field is left
+  `null` (never fabricated) and a `clarificationsNeeded` item asks for whatever's
+  missing.
+
+This replaced an earlier, briefer rule that said to always carry a note-provided code
+through verbatim without checking it — that was discarded specifically because it made
+the app a rubber stamp for a doctor's documentation mistakes instead of a coder's
+independent check. If you touch this logic again, keep the "verify, don't blindly
+trust either party" framing rather than defaulting back to verbatim copy.
+
 ## Domain model quirks worth knowing
 
-- `Diagnosis.icd10Hint` and `Procedure.cptHint` are populated by `lib/openai.ts`'s
-  prompt with a strict priority order: **(1)** if the note itself already states a
-  code for that diagnosis/procedure, the model must carry it through verbatim — never
-  replace or "correct" a code the note already provides; **(2)** otherwise, assign
-  the model's own best-judgment code, but only when it's genuinely confident;
-  **(3)** if it isn't confident, leave the field `null` rather than guess. This was a
-  deliberate tightening — an earlier version of the prompt said "give your best
-  judgment, only null if truly nothing applies," which pushed the model to fabricate
-  a plausible-looking code under uncertainty instead of admitting it didn't know. A
-  blank code a coder fills in themselves is safer than a wrong one they miss. The
-  fields' internal names still say "Hint" even though a note-supplied code is treated
-  as authoritative, not a guess — a minor naming mismatch, not a bug. Shown in
-  `SummaryPanel.tsx` as "ICD-10 Code" / "CPT Code" / "HCPCS Code" /
+- `Diagnosis.icd10Hint` and `Procedure.cptHint` — see "Codes are validated, not copied"
+  above for how they're derived. The fields' internal names still say "Hint" even
+  though a validated code is treated as a real assignment, not a guess — a minor
+  naming mismatch, not a bug. Shown in `SummaryPanel.tsx` as "ICD-10 Code" / "CPT Code" / "HCPCS Code" /
   "E/M Code" fields (label picked dynamically from `codeType`), **and** these same
   values are what `codesFromSummary()` (`page.tsx`) turns into the initial
   `source: "AI"` rows of the Suggested Codes table right after analysis — the two
@@ -160,9 +196,9 @@ reliably, and the model doing the analysis is already the best classifier availa
   (`codesFromSummary`, populated automatically on analyze). `'Optum'` rows come from
   Step 2 (`handleGenerateCodes` in `page.tsx`, the optional "Get Codes via Optum"
   button — currently always errors since `/api/generate-codes` isn't implemented, see
-  above). `'Manual'` is a coder-typed addition. Precision/Recall (`AccuracyBar.tsx`)
-  treat `'AI'` and `'Optum'` identically as "suggested" (i.e. not manually typed) —
-  see the formula note below.
+  above). `'Manual'` is a coder-typed addition (via `AddCodeRow`/`handleAddManual`);
+  there's no default status attached to it — see "Reference-only tool" above, there
+  is no `CodeStatus` concept anymore.
 - `ClinicalSummary.briefSummary` — despite the name, this is a **crisp clinical
   impression, not a sentence**: a few words naming the primary diagnosis/complaint
   (e.g. "Lower back pain", "Type 2 diabetes with neuropathy"), the way a coder would
@@ -172,36 +208,37 @@ reliably, and the model doing the analysis is already the best classifier availa
 - `ClinicalSummary.clarificationsNeeded` — follow-up questions for the provider, but
   only when the model genuinely can't reach a conclusion on something coding-relevant
   (not for minor ambiguity); empty when nothing is genuinely unresolved, never a
-  reason to leave other fields blank. Rendered as an amber "Needs Clarification"
-  callout.
-- `CodeStatus` is `'pending' | 'accepted' | 'rejected' | 'modified'`. `'modified'` is
-  treated as "kept" for accuracy purposes, same as `'accepted'` — see
-  `KEPT_STATUSES` in `src/components/AccuracyBar.tsx`.
-- Precision/Recall (`AccuracyBar.tsx`): `Precision = accepted-or-modified suggested
-  codes / total suggested codes`, where "suggested" means `source !== 'Manual'` (so
-  both `'AI'` and `'Optum'`). `Recall = accepted-or-modified suggested codes / all
-  accepted-or-modified codes (suggested + Manual)`. If you change these formulas,
-  update both the code and this note.
-- Manually added codes (`source: 'Manual'`) default to `status: 'accepted'` immediately
-  (`handleAddManual` in `page.tsx`) since the coder is adding them directly.
+  reason to leave other fields blank. Since "Codes are validated, not copied" (above)
+  can add a full-sentence discrepancy explanation here, these items are often longer
+  than the note's other short fields. Rendered in `SummaryPanel.tsx` as a numbered,
+  read-only list inside an amber "Needs Clarification (N)" callout — plain wrapped
+  `<p>` text, not an `<input>` — specifically because a single-line input truncated/
+  scrolled long sentences instead of showing them; don't revert to an editable input
+  here without solving that wrapping problem too. It's collapsible (`clarificationsOpen`
+  state, defaults to `true`/expanded since these are actionable, unlike Negations
+  below) via the same "+"/"×" toggle pattern; the toggle button itself only renders
+  when there's at least one item (collapsing an empty "No clarifications needed" line
+  has no value).
 - `SummaryPanel.tsx`'s "Negations" field group is collapsed by default (a `useState`
   toggle, `negationsOpen`) behind a small "+" button that rotates into an "×" when
   open — this is deliberate, to keep the main summary view uncluttered; negations are
   useful to confirm but rarely the coder's primary focus. `FieldGroup` takes an
   optional `action` node rendered next to its label for this kind of per-section
   control; follow that pattern (rather than a one-off layout) if another section needs
-  similar collapse/expand behavior.
+  similar collapse/expand behavior — Needs Clarification (above) reuses it too, just
+  with a different default and an amber-tinted toggle button to match its callout.
 
 ## UI/styling conventions
 
-- Palette: `bg-slate-50` app background, `teal-600` primary accent, green = accept,
-  red = reject, amber = modified. Cards: white, `rounded-xl`, `border-slate-200`,
-  `shadow-sm`.
+- Palette: `bg-slate-50` app background, `teal-600` primary accent, amber = needs
+  attention (HCPCS badge, Needs Clarification callout). Cards: white, `rounded-xl`,
+  `border-slate-200`, `shadow-sm`.
 - Every interactive element needs visible hover/focus/disabled states
   (`focus-visible:ring-2` pattern used throughout).
-- Icon-only buttons need `aria-label` (see `RowActions` in `CodesTable.tsx`). No icon
-  library is installed — icons are small inline SVGs local to the component that uses
-  them; don't add an icon dependency without discussing it first.
+- Icon-only buttons need `aria-label` (see the negations expand/collapse button in
+  `SummaryPanel.tsx`). No icon library is installed — icons are small inline SVGs
+  local to the component that uses them; don't add an icon dependency without
+  discussing it first.
 - Mobile-first: components that render a table on desktop must also render a stacked
   card layout below the `sm` breakpoint (see `CodesTable.tsx`'s `CodeRow`/`CodeCard`
   split) rather than relying on horizontal scroll.
@@ -218,5 +255,6 @@ reliably, and the model doing the analysis is already the best classifier availa
 - `pnpm exec tsc --noEmit` and `pnpm run lint` should both be clean before considering a
   change done.
 - For UI changes, actually exercise the flow (Analyze → edit summary → Generate Codes →
-  accept/reject/modify/add-manual → Export) in a browser rather than relying on
-  types/lint alone — the accuracy math and inline-edit states are easy to break silently.
+  add-manual → Export) in a browser rather than relying on types/lint alone — code
+  validation/discrepancy-flagging logic and the conditional Modifier/Units columns are
+  easy to break silently without seeing real output.

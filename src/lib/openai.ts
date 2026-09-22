@@ -90,32 +90,41 @@ the full analysis below.
   never a full sentence with a verb.
 - "diagnoses": each distinct diagnosis, with a short unique "id" (e.g. "dx-1"), any
   explicit attributes (status, severity, laterality, relevant values) as
-  label/value pairs, and "icd10Hint":
-  - If the note itself already states a code for this diagnosis (e.g. "ICD-10:
-    J44.1", "dx code E11.9"), use that exact code verbatim. Never replace,
-    "correct", or second-guess a code the note already provides — carry it
-    through as-is even if you would have picked a different one.
-  - Otherwise, assign your own best-judgment ICD-10-CM code using the
-    specificity available in the note (laterality, episode of care, severity —
-    reflect it in the code when the note supports it), but only when you are
-    genuinely confident it's correct.
-  - If you are not confident — the note doesn't give you enough to pick a
-    specific code, or you're genuinely unsure — set "icd10Hint" to null. A
-    blank code is better than a wrong one; never fabricate or guess a code
-    just to fill the field.
+  label/value pairs, and "icd10Hint": always work out the correct ICD-10-CM code
+  yourself from the documented condition (laterality, episode of care, severity —
+  reflect it in the code when the note supports it) — never copy a code straight
+  from the note without checking it. Providers can and do mis-code, so treat any
+  code already written in the note as a claim to verify, not a fact:
+  - If the note includes a code for this diagnosis and your own analysis agrees
+    it's correct, use it.
+  - If the note's code looks wrong or inconsistent with what's actually
+    documented (wrong specificity, wrong condition, mismatched laterality,
+    etc.), use the code YOU determine to be correct instead, and add an item to
+    "clarificationsNeeded" flagging the discrepancy in plain language (e.g.
+    "Note lists ICD-10 M54.5 for this diagnosis, but the documented findings
+    support M54.50 — please confirm with the provider.") so the coder knows to
+    double-check it rather than silently trusting either the note or you.
+  - If you cannot confidently determine a correct code at all — whether or not
+    the note offered one — set "icd10Hint" to null rather than guessing, and
+    add a "clarificationsNeeded" item asking for whatever detail would let a
+    code be assigned. A blank code a coder fills in is safer than a wrong one
+    that goes unnoticed.
 - "procedures": each procedure, service, supply, or billable item performed,
   administered, or ordered — including the encounter's own Evaluation &
   Management (E/M) service when one applies (see below) — with a short unique
   "id" (e.g. "px-1"), and:
-  - "cptHint":
-    - If the note itself already states a code for this procedure/item, use
-      that exact code verbatim — never replace, "correct", or second-guess a
-      code the note already provides. Infer "codeType" from its format (see
-      below) rather than assigning a different code of your own.
-    - Otherwise, assign your own best-judgment code, but only when you are
-      genuinely confident it's correct.
-    - If you are not confident, set "cptHint" to null rather than guessing —
-      a blank code is better than a wrong one.
+  - "cptHint": always work out the correct code yourself from what was
+    actually performed/administered — never copy a code straight from the
+    note without checking it, since providers can mis-code procedures too.
+    - If the note includes a code and your own analysis agrees it's correct,
+      use it (and infer "codeType" from its format, see below).
+    - If the note's code looks wrong or doesn't match what was actually done,
+      use the code YOU determine to be correct instead, and add an item to
+      "clarificationsNeeded" flagging the discrepancy so the coder can verify
+      it with the provider rather than either of you being trusted blindly.
+    - If you cannot confidently determine a correct code at all, set
+      "cptHint" to null rather than guessing, and add a "clarificationsNeeded"
+      item asking for whatever detail would let a code be assigned.
   - "codeType": which code set "cptHint" is drawn from —
     - "E/M": the visit's own evaluation & management code (e.g. 99202-99215
       for office visits, 99221-99239 for inpatient) reflecting the
@@ -148,15 +157,17 @@ the full analysis below.
   if — you genuinely cannot reach a confident conclusion on something a coder
   would need, state plainly what should be asked of (or confirmed by) the
   provider to resolve it. This includes: the note is silent on laterality/severity
-  where it matters, the encounter type is unclear, OR the note itself leaves a
-  diagnosis unconfirmed/differential (e.g. "gout vs. cellulitis", "possible
-  pneumonia, r/o other causes") — marking such a diagnosis's status as
-  "suspected"/"differential" in its attributes is not a substitute for flagging it
-  here, since the coder cannot finalize a code from an unconfirmed diagnosis
-  without knowing that. Do not add an item for minor phrasing ambiguity or
-  something you can reasonably infer — this list is for real gaps, not hedging.
-  Still give your best-effort analysis for every other field regardless of any
-  gap you flag here. Return an empty array when nothing is genuinely unresolved.
+  where it matters, the encounter type is unclear, a code already in the note
+  conflicts with what you determined is correct (see "icd10Hint"/"cptHint"
+  above), OR the note itself leaves a diagnosis unconfirmed/differential (e.g.
+  "gout vs. cellulitis", "possible pneumonia, r/o other causes") — marking such a
+  diagnosis's status as "suspected"/"differential" in its attributes is not a
+  substitute for flagging it here, since the coder cannot finalize a code from an
+  unconfirmed diagnosis without knowing that. Do not add an item for minor
+  phrasing ambiguity or something you can reasonably infer — this list is for
+  real gaps, not hedging. Still give your best-effort analysis for every other
+  field regardless of any gap you flag here. Return an empty array when nothing
+  is genuinely unresolved.
 
 Never include any person's name (patient, family member, or provider) anywhere in
 the output, even if one appears in the note — refer to people by role instead
@@ -177,12 +188,6 @@ export async function analyzeWithOpenAI(
     model: process.env.OPENAI_MODEL || DEFAULT_MODEL,
     instructions: SYSTEM_INSTRUCTION,
     input: soapNote,
-    // No `temperature` here: newer/reasoning-tier models (this app has been
-    // tested against gpt-5.6-sol) reject the param outright with a 400. It
-    // only affects run-to-run determinism, not correctness, and the strict
-    // JSON schema below already constrains output shape — so it's safe to
-    // omit rather than special-case per model. Re-add it only behind a
-    // try/model-capability check if determinism becomes an actual problem.
     text: {
       format: zodTextFormat(openAiClinicalSummarySchema, "clinical_summary"),
     },
