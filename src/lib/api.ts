@@ -3,6 +3,9 @@ import type {
   AnalyzeRequest,
   ClinicalSummary,
   GenerateCodesRequest,
+  OptumCodeType,
+  OptumSearchNode,
+  OptumSearchRequest,
   SuggestedCode,
 } from "./types";
 
@@ -21,6 +24,18 @@ export async function generateCodes(
     payload
   );
   return data;
+}
+
+export async function searchOptumCodes(
+  term: string,
+  codeType: OptumCodeType
+): Promise<OptumSearchNode[]> {
+  const payload: OptumSearchRequest = { term, codeType };
+  const { data } = await axios.post<{ results: OptumSearchNode[] }>(
+    "/api/optum-search",
+    payload
+  );
+  return data.results;
 }
 
 export function getErrorMessage(error: unknown, fallback: string): string {

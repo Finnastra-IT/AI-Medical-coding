@@ -90,6 +90,38 @@ export default function Home() {
     }
   }
 
+  function handleOptumCodeSelected(selection: {
+    id: string;
+    code: string;
+    description: string;
+    type: CodeType;
+  }) {
+    setCodes((prev) => {
+      const existingIndex = prev.findIndex((code) => code.id === selection.id);
+      const nextCode: SuggestedCode = { ...selection, source: "Optum" };
+      if (existingIndex === -1) {
+        return [...prev, nextCode];
+      }
+      const next = [...prev];
+      next[existingIndex] = nextCode;
+      return next;
+    });
+  }
+
+  function handleAddFromOptum(code: string, description: string, type: CodeType) {
+    optumCodeCounter += 1;
+    setCodes((prev) => [
+      ...prev,
+      {
+        id: `optum-${optumCodeCounter}`,
+        code,
+        description,
+        type,
+        source: "Optum",
+      },
+    ]);
+  }
+
   function handleAddManual(
     code: string,
     description: string,
@@ -146,6 +178,7 @@ export default function Home() {
                 onChange={setSummary}
                 onGenerateCodes={handleGenerateCodes}
                 isGeneratingCodes={isGeneratingCodes}
+                onOptumCodeSelected={handleOptumCodeSelected}
               />
             )}
           </div>
@@ -157,6 +190,7 @@ export default function Home() {
             codes={codes}
             isLoading={false}
             onAddManual={handleAddManual}
+            onAddFromOptum={handleAddFromOptum}
             onExport={handleExport}
           />
         )}

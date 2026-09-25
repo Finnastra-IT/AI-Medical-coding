@@ -67,3 +67,25 @@ export interface AnalyzeRequest {
 export interface GenerateCodesRequest {
   summary: ClinicalSummary;
 }
+
+// The Optum RealTime eContent term-search API's own casing/vocabulary for a
+// code family — deliberately kept distinct from CodeType/ProcedureCodeType
+// (which use "ICD-10"/"E/M" etc.) since this is what the wire API expects in
+// its URL path, not our internal domain vocabulary.
+export type OptumCodeType = "cpt" | "hcpcs" | "icd10cm";
+
+// A node in the term-search response tree. Leaf nodes (an actual selectable
+// code) have an empty `node` array; anything else is a grouping/range node
+// (e.g. "K0001-K0195") that exists purely to organize the tree.
+export interface OptumSearchNode {
+  code: string;
+  rank: number;
+  desc: string;
+  descFull: string;
+  node: OptumSearchNode[];
+}
+
+export interface OptumSearchRequest {
+  term: string;
+  codeType: OptumCodeType;
+}

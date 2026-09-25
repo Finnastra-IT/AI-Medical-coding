@@ -1,14 +1,29 @@
 "use client";
 
 import { useState, type ReactNode } from "react";
-import type { ClinicalSummary, Diagnosis, Procedure } from "@/lib/types";
+import type {
+  ClinicalSummary,
+  CodeType,
+  Diagnosis,
+  OptumCodeType,
+  Procedure,
+} from "@/lib/types";
 import EmptyState from "./EmptyState";
+import OptumCodeSearch from "./OptumCodeSearch";
+
+interface OptumCodeSelection {
+  id: string;
+  code: string;
+  description: string;
+  type: CodeType;
+}
 
 interface SummaryPanelProps {
   summary: ClinicalSummary | null;
   onChange: (summary: ClinicalSummary) => void;
   onGenerateCodes: () => void;
   isGeneratingCodes: boolean;
+  onOptumCodeSelected: (selection: OptumCodeSelection) => void;
 }
 
 export default function SummaryPanel({
@@ -16,6 +31,7 @@ export default function SummaryPanel({
   onChange,
   onGenerateCodes,
   isGeneratingCodes,
+  onOptumCodeSelected,
 }: SummaryPanelProps) {
   const [negationsOpen, setNegationsOpen] = useState(false);
   const [clarificationsOpen, setClarificationsOpen] = useState(true);
@@ -68,6 +84,17 @@ export default function SummaryPanel({
                     diagnoses[index] = updated;
                     onChange({ ...summary, diagnoses });
                   }}
+                  onOptumSelect={(code) => {
+                    const diagnoses = [...summary.diagnoses];
+                    diagnoses[index] = { ...diagnosis, icd10Hint: code };
+                    onChange({ ...summary, diagnoses });
+                    onOptumCodeSelected({
+                      id: `ai-${diagnosis.id}`,
+                      code,
+                      description: diagnosis.condition,
+                      type: "ICD-10",
+                    });
+                  }}
                 />
               ))}
               {summary.diagnoses.length === 0 && (
@@ -86,6 +113,18 @@ export default function SummaryPanel({
                     const procedures = [...summary.procedures];
                     procedures[index] = updated;
                     onChange({ ...summary, procedures });
+                  }}
+                  onOptumSelect={(code, optumType) => {
+                    const codeType = optumType === "hcpcs" ? "HCPCS" : "CPT";
+                    const procedures = [...summary.procedures];
+                    procedures[index] = { ...procedure, cptHint: code, codeType };
+                    onChange({ ...summary, procedures });
+                    onOptumCodeSelected({
+                      id: `ai-${procedure.id}`,
+                      code,
+                      description: procedure.description,
+                      type: codeType,
+                    });
                   }}
                 />
               ))}
@@ -303,9 +342,11 @@ function PlusIcon({ className }: { className?: string }) {
 function DiagnosisEditor({
   diagnosis,
   onChange,
+  onOptumSelect,
 }: {
   diagnosis: Diagnosis;
   onChange: (diagnosis: Diagnosis) => void;
+  onOptumSelect: (code: string) => void;
 }) {
   return (
     <div className="rounded-lg border border-slate-200 bg-slate-50/60 p-3">
@@ -323,6 +364,13 @@ function DiagnosisEditor({
             value={diagnosis.icd10Hint ?? ""}
             onChange={(value) => onChange({ ...diagnosis, icd10Hint: value })}
           />
+          {!diagnosis.icd10Hint && (
+            <OptumCodeSearch
+              term={diagnosis.condition}
+              codeTypes={["icd10cm"]}
+              onSelect={(code) => onOptumSelect(code)}
+            />
+          )}
         </div>
       </div>
       {diagnosis.attributes.length > 0 && (
@@ -363,9 +411,11 @@ const CODE_TYPE_LABEL: Record<NonNullable<Procedure["codeType"]>, string> = {
 function ProcedureEditor({
   procedure,
   onChange,
+  onOptumSelect,
 }: {
   procedure: Procedure;
   onChange: (procedure: Procedure) => void;
+  onOptumSelect: (code: string, codeType: OptumCodeType) => void;
 }) {
   const hasModifier = procedure.modifier !== undefined;
   const hasUnits = procedure.units !== undefined;
@@ -386,6 +436,13 @@ function ProcedureEditor({
             value={procedure.cptHint ?? ""}
             onChange={(value) => onChange({ ...procedure, cptHint: value })}
           />
+          {!procedure.cptHint && (
+            <OptumCodeSearch
+              term={procedure.description}
+              codeTypes={["cpt", "hcpcs"]}
+              onSelect={onOptumSelect}
+            />
+          )}
         </div>
         {hasModifier && (
           <div className="w-full sm:w-20">
@@ -415,3 +472,4 @@ function ProcedureEditor({
     </div>
   );
 }
+

@@ -3,6 +3,7 @@
 import { useState } from "react";
 import type { CodeType, SuggestedCode } from "@/lib/types";
 import EmptyState from "./EmptyState";
+import OptumLookup from "./OptumLookup";
 
 interface CodesTableProps {
   codes: SuggestedCode[];
@@ -14,6 +15,7 @@ interface CodesTableProps {
     modifier?: string,
     units?: number
   ) => void;
+  onAddFromOptum: (code: string, description: string, type: CodeType) => void;
   onExport: () => void;
 }
 
@@ -26,6 +28,7 @@ export default function CodesTable({
   codes,
   isLoading,
   onAddManual,
+  onAddFromOptum,
   onExport,
 }: CodesTableProps) {
   const showModifierUnits = hasModifierOrUnits(codes);
@@ -53,7 +56,7 @@ export default function CodesTable({
         {codes.length === 0 ? (
           <EmptyState
             title="No codes yet"
-            description="Add a code manually below, or get suggestions from Optum above."
+            description="Add or look up a code below, or get suggestions from the button above."
           />
         ) : (
           <table className="w-full min-w-[560px] table-auto border-collapse text-sm">
@@ -83,18 +86,20 @@ export default function CodesTable({
           </table>
         )}
         <AddCodeRow onAdd={onAddManual} variant="row" />
+        <OptumLookup onAdd={onAddFromOptum} variant="row" />
       </div>
 
       <div className="flex flex-col gap-3 sm:hidden">
         {codes.length === 0 ? (
           <EmptyState
             title="No codes yet"
-            description="Add a code manually below, or get suggestions from Optum above."
+            description="Add or look up a code below, or get suggestions from the button above."
           />
         ) : (
           codes.map((code) => <CodeCard key={code.id} code={code} />)
         )}
         <AddCodeRow onAdd={onAddManual} variant="card" />
+        <OptumLookup onAdd={onAddFromOptum} variant="card" />
       </div>
     </section>
   );

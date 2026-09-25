@@ -29,6 +29,17 @@ supports one. See "Domain model quirks worth knowing" below for the full shape.
 The model doesn't just transcribe whatever code the note already has, either — see
 "Codes are validated, not copied" below.
 
+There are now **three separate, unrelated Optum-related things** — don't conflate them:
+1. The bulk "Get Codes via Optum (Optional)" button (Step 2 above) — sends the whole
+   summary to `POST /api/generate-codes`, which is still a stub (`501`, "coming soon").
+2. The per-field "Search Optum" option next to any blank ICD-10/CPT/HCPCS code — this
+   one is **live**, hits Optum's real RealTime eContent term-search API, and is
+   documented in full under "Per-field Optum code search" below.
+3. The standalone "Look up a code" tool in the Suggested Codes table — also **live**,
+   hits the same real term-search API but with a coder-typed term instead of a field's
+   own text, and adds a fresh row instead of filling an existing field. Documented
+   under "Standalone Optum code lookup" below.
+
 ## Stack
 
 - Next.js 16 (App Router, Turbopack), React 19, TypeScript (`strict: true`, no `any`)
@@ -62,7 +73,7 @@ The model doesn't just transcribe whatever code the note already has, either —
   always hit their real backend (or report "coming soon" if it isn't wired up yet, see
   below). Don't reintroduce a mock path without being explicitly asked.
 
-## API routes: one live, one "coming soon"
+## API routes: two live, one "coming soon"
 
 - `POST /api/analyze` → **live, always**. Calls OpenAI via `analyzeWithOpenAI` in
   `src/lib/openai.ts`, using `OPENAI_API_KEY` (and optional `OPENAI_MODEL`, default
@@ -73,15 +84,23 @@ The model doesn't just transcribe whatever code the note already has, either —
   `openai/helpers/zod`) for strict structured JSON output — the SDK validates against
   the schema and returns `response.output_parsed` already typed, so there's no manual
   `JSON.parse`/`safeParse` step here. On failure it returns `502` with a message.
+- `POST /api/optum-search` → **live, always**. Body `{ term, codeType }` (validated by
+  `optumSearchRequestSchema`), calls `searchOptumCodes` in `src/lib/optum.ts`, returns
+  `{ results: OptumSearchNode[] }` or `{ error }` with `502`. This is the per-field
+  "Search Optum" feature — see "Per-field Optum code search" below for the full
+  picture (it is NOT the same thing as the route below).
 - `POST /api/generate-codes` → **not implemented yet — always returns `501` with
   `{ error: "Optum integration is coming soon." }`** after validating the request body.
   This is intentional, not a bug: it's the optional Step 2 ("Get Codes via Optum"), and
-  real `OPTUM_CLIENT_ID` / `OPTUM_CLIENT_SECRET` credentials haven't been provisioned.
-  When they are, implement a `lib/optum.ts` helper following the same shape as
-  `lib/openai.ts` (validate its output against `SuggestedCode[]`, throw a clear `Error`
-  on failure so the route can map it to `502`), swap the `NextResponse.json(...501...)`
-  for the real call, and update this note — don't leave it saying "coming soon" once
-  it's live. The frontend already has correct handling for both outcomes (see
+  nobody's defined what a whole-summary-to-codes Optum call should even look like yet
+  (unlike the per-field search below, which has a concrete real endpoint). `lib/optum.ts`
+  now exists (see below) and already holds the `OPTUM_CLIENT_ID`/`OPTUM_CLIENT_SECRET`
+  credentials and token-fetch logic this route would need — when this feature is
+  scoped, add a new function there (validate its output against `SuggestedCode[]`,
+  throw a clear `Error` on failure so the route can map it to `502`), swap the
+  `NextResponse.json(...501...)` for the real call, and update this note — don't leave
+  it saying "coming soon" once it's live. The frontend already has correct handling for
+  both outcomes (see
   `handleGenerateCodes` in `page.tsx`): on success it appends returned codes to the
   table tagged `source: "Optum"`; on failure it calls `toast.error(...)` with the
   message. No frontend change should be needed to go live here.
@@ -163,6 +182,119 @@ through verbatim without checking it — that was discarded specifically because
 the app a rubber stamp for a doctor's documentation mistakes instead of a coder's
 independent check. If you touch this logic again, keep the "verify, don't blindly
 trust either party" framing rather than defaulting back to verbatim copy.
+
+## Per-field Optum code search — real integration, live
+
+When a diagnosis's ICD-10 code or a procedure's CPT/HCPCS code is left blank (per
+"Codes are validated, not copied" above — the model wasn't confident enough to assign
+one), `SummaryPanel.tsx` shows a "Search Optum" link right under that blank field.
+Clicking it queries Optum's real **RealTime eContent** term-search API and renders the
+results as a collapsible tree; clicking a leaf code fills the field (and adds/updates
+the matching row in the Suggested Codes table, tagged `source: "Optum"`). This is a
+**different, unrelated feature from the bulk "Get Codes via Optum" button** — see
+"What this app is" above — and a different, unrelated feature from the standalone
+"Look up a code" tool in `CodesTable.tsx` too, see "Standalone Optum code lookup"
+below. There are now **three** distinct Optum-related things in this app; don't
+conflate any of them.
+
+The widget itself lives in its own file, `src/components/OptumCodeSearch.tsx` (it used
+to be defined inline inside `SummaryPanel.tsx` — extracted so both this and the
+standalone lookup below could share the recursive tree renderer without duplicating
+it). It has an explicit "×" close button in the panel header, and also closes on
+Escape or a click/tap outside it (`useEffect` + a `containerRef`, in
+`OptumCodeSearch.tsx`) — an earlier version only had the toggle link itself to close
+it, which wasn't discoverable once the panel covered it; don't remove all three ways
+to close it again.
+
+- **Auth**: `src/lib/optum.ts` exchanges `OPTUM_CLIENT_ID`/`OPTUM_CLIENT_SECRET` for a
+  short-lived Bearer token via `client_credentials` grant against
+  `https://apigw.optum.com/apip/auth/sntl/v1/token` (form-urlencoded POST). **These env
+  vars hold the real OAuth client id/secret, NOT an access token** — an access token
+  was mistakenly pasted into `OPTUM_CLIENT_SECRET` once during setup; it's a JWT with
+  `iat`/`exp` ~2 hours apart and would silently stop working a couple hours later. If
+  you ever see a JWT-looking value in `OPTUM_CLIENT_SECRET`, that's the same mistake —
+  it needs the actual client secret instead.
+- **Token caching**: the fetched token is cached in a module-level variable
+  (`cachedToken` in `lib/optum.ts`) and reused until ~60s before its `expires_in`
+  elapses, then refreshed automatically. This is in-memory only — reset on every cold
+  start, not shared across instances. Fine at this app's scale; revisit with a shared
+  cache (Redis, etc.) only if this is deployed multi-instance. `searchOptumCodes` also
+  retries once on a `401` (clears the cache and re-fetches) in case a token was
+  revoked/rejected early.
+- **Search endpoint**: `GET https://realtimeecontent.com/ws/codetype/{codeType}/termsearchgroups/{term}`
+  with `codeType` one of `"cpt" | "hcpcs" | "icd10cm"` (`OptumCodeType` in
+  `types.ts` — deliberately lowercase/vendor-shaped, distinct from our own
+  `CodeType`/`ProcedureCodeType`), query `data=rank,desc,desc-full&maxresults=50`. The
+  response is a recursive tree (`OptumSearchNode`: `code`, `rank`, `desc`, `descFull`,
+  `node: OptumSearchNode[]`) — a node with an empty `node` array is a real, selectable
+  code; anything else is a grouping/range node (e.g. "K0001-K0195") that exists only to
+  organize the tree and isn't itself selectable. `OptumResultNode` in the shared
+  `src/components/OptumResultTree.tsx` renders this recursively, expanding/collapsing
+  group nodes and treating leaves as clickable buttons — its `onSelect(code, desc)`
+  passes back both the code and the leaf's own description, even though this per-field
+  widget only uses `code` (it already knows its own field's description); the
+  standalone lookup below needs `desc` too, which is why the shared renderer passes
+  both.
+- **UI wiring**: `DiagnosisEditor` searches `codeTypes={["icd10cm"]}` using
+  `diagnosis.condition` as the term; `ProcedureEditor` searches
+  `codeTypes={["cpt", "hcpcs"]}` (a small tab toggle lets the coder switch) using
+  `procedure.description` as the term. The `OptumCodeSearch` widget only renders when
+  the corresponding field is falsy — once a code is filled (by search or by typing),
+  the widget disappears; clearing the field brings it back. The results panel is
+  `absolute`-positioned as a floating overlay (not laid out inline) specifically
+  because the code field's column is only `sm:w-32` — too narrow for a tree with
+  descriptions; don't move it back into normal flow without solving that width problem
+  again.
+- **Populating both places at once**: selecting a leaf calls `onOptumSelect` (passed
+  down per diagnosis/procedure from `SummaryPanel`), which does two things: updates
+  `summary` (via the existing `onChange`) so the field shows the code, AND calls
+  `onOptumCodeSelected` (a new `SummaryPanel` prop, wired to `handleOptumCodeSelected`
+  in `page.tsx`) to upsert a row into the `codes` table by id (`ai-${diagnosis.id}` /
+  `ai-${procedure.id}` — same id scheme `codesFromSummary` uses, so it's a true upsert,
+  not a duplicate, if a row already exists for that id). Keep both halves in sync if
+  you touch this path — filling only the summary field without updating the table
+  would silently hide the new code from the actual coding deliverable.
+
+## Standalone Optum code lookup — real integration, live
+
+A third, independent way to get a code: `CodesTable.tsx` has a "Look up a code" button
+(next to "Add missed code") that isn't tied to any specific diagnosis/procedure. The
+coder types any term, picks a code type (**ICD-10 / CPT / HCPCS**, all three — unlike
+the per-field search, which is scoped to the field it's attached to), and hits Search.
+Selecting a leaf from the results tree **appends a new row straight to the Suggested
+Codes table** (`source: "Optum"`) via `onAdd`/`handleAddFromOptum` in `page.tsx` — there
+is no existing field to also fill, unlike the per-field version.
+
+- Lives in `src/components/OptumLookup.tsx`, reusing the same shared
+  `OptumResultNode` tree renderer as `OptumCodeSearch.tsx` (see
+  `OptumResultTree.tsx`). The trigger is still a small button styled like
+  `AddCodeRow`'s (dashed-border on mobile, text link on desktop), but the search
+  UI itself opens in a **`Modal`** (`src/components/Modal.tsx`) rather than expanding
+  inline — an inline panel kept pushing the whole Suggested Codes table down every
+  time it opened or the tree grew, and a collapsible tree with descriptions needs
+  real width/height to be readable, which a centered modal gives it (unlike the
+  per-field search's cramped `sm:w-32` column, which is why that one instead floats
+  as an `absolute` overlay — two different problems, two different fixes; don't
+  conflate them or "fix" one using the other's approach).
+- `Modal.tsx` is a generic, reusable shell (backdrop + centered dialog, portaled to
+  `document.body` via `createPortal` so it always stacks above everything regardless
+  of where it's rendered from): closes on Escape, on a backdrop click, or its own "×",
+  locks background scroll while open, and focuses the dialog on open (`OptumLookup`
+  additionally focuses its own search input via a `ref`). Reach for this instead of a
+  one-off overlay if another feature needs a modal — don't build a second bespoke one.
+- **Deliberately does not auto-close after adding a code** — unlike the per-field
+  widget (which closes because it only has one slot to fill), this one stays open so
+  the coder can search once and add several related codes in a row (e.g. searching
+  "wheelchair" under HCPCS and adding more than one accessory code). It closes only via
+  the modal's close mechanisms (its "×", Escape, or clicking the backdrop), which also
+  resets the term/type/results back to defaults.
+- Each `SuggestedCode` row it creates gets a fresh id off the same `optumCodeCounter`
+  used by the bulk "Get Codes via Optum" button (`optum-${n}`) — both are genuinely
+  `source: "Optum"` rows, so sharing the counter just keeps ids unique app-wide; it
+  does not imply the two features are related (see "Per-field Optum code search"
+  above — they're not).
+- Selecting the same code twice appends two separate rows (no dedup) — same as the
+  existing manual "Add missed code" behavior, so this isn't a new inconsistency.
 
 ## Domain model quirks worth knowing
 

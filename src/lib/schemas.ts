@@ -46,3 +46,8 @@ export const clinicalSummarySchema = z.object({
 export const generateCodesRequestSchema = z.object({
   summary: clinicalSummarySchema,
 });
+
+export const optumSearchRequestSchema = z.object({
+  term: z.string().trim().min(1, "term must not be empty"),
+  codeType: z.enum(["cpt", "hcpcs", "icd10cm"]),
+});
