@@ -64,10 +64,6 @@ export interface AnalyzeRequest {
   soapNote: string;
 }
 
-export interface GenerateCodesRequest {
-  summary: ClinicalSummary;
-}
-
 // The Optum RealTime eContent term-search API's own casing/vocabulary for a
 // code family — deliberately kept distinct from CodeType/ProcedureCodeType
 // (which use "ICD-10"/"E/M" etc.) since this is what the wire API expects in

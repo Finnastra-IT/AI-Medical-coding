@@ -5,8 +5,8 @@ import toast from "react-hot-toast";
 import Header from "@/components/Header";
 import SoapInput from "@/components/SoapInput";
 import SummaryPanel, { SummaryPanelSkeleton } from "@/components/SummaryPanel";
-import CodesTable, { CodesTableSkeleton } from "@/components/CodesTable";
-import { analyzeNote, generateCodes, getErrorMessage } from "@/lib/api";
+import CodesTable from "@/components/CodesTable";
+import { analyzeNote, getErrorMessage } from "@/lib/api";
 import type { ClinicalSummary, CodeType, SuggestedCode } from "@/lib/types";
 
 let manualCodeCounter = 0;
@@ -43,7 +43,6 @@ export default function Home() {
   const [summary, setSummary] = useState<ClinicalSummary | null>(null);
   const [codes, setCodes] = useState<SuggestedCode[]>([]);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
-  const [isGeneratingCodes, setIsGeneratingCodes] = useState(false);
 
   const currentStep = useMemo<1 | 2 | 3>(() => {
     if (codes.length > 0) return 3;
@@ -63,30 +62,6 @@ export default function Home() {
       );
     } finally {
       setIsAnalyzing(false);
-    }
-  }
-
-  async function handleGenerateCodes() {
-    if (!summary) return;
-    setIsGeneratingCodes(true);
-    try {
-      const result = await generateCodes(summary);
-      setCodes((prev) => [
-        ...prev,
-        ...result.map((code) => {
-          optumCodeCounter += 1;
-          return { ...code, id: `optum-${optumCodeCounter}`, source: "Optum" as const };
-        }),
-      ]);
-    } catch (err) {
-      toast.error(
-        getErrorMessage(
-          err,
-          "Optum is not available yet. Please try again later."
-        )
-      );
-    } finally {
-      setIsGeneratingCodes(false);
     }
   }
 
@@ -176,16 +151,13 @@ export default function Home() {
               <SummaryPanel
                 summary={summary}
                 onChange={setSummary}
-                onGenerateCodes={handleGenerateCodes}
-                isGeneratingCodes={isGeneratingCodes}
                 onOptumCodeSelected={handleOptumCodeSelected}
               />
             )}
           </div>
         </div>
 
-        {isGeneratingCodes && <CodesTableSkeleton />}
-        {summary && !isGeneratingCodes && (
+        {summary && (
           <CodesTable
             codes={codes}
             isLoading={false}

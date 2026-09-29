@@ -9,12 +9,20 @@ the same change** — treat it as part of the diff, not a follow-up.
 
 A single-page **reference tool** for a medical coder: paste a SOAP note → AI-structured
 clinical summary, **with OpenAI already assigning a code to each diagnosis and
-procedure as part of that same analysis (Step 1)** → those codes populate the Suggested
-Codes table automatically, no extra click needed → coder can add a code manually if the
-AI missed one → optionally, "Get Codes via Optum" (Step 2, currently returns "coming
-soon" — see below) adds a second, independently-sourced set of coded suggestions into
-the same table. See `src/app/page.tsx` for the end-to-end flow, especially
-`codesFromSummary` (the Step 1 → codes-table bridge).
+procedure as part of that same analysis** → those codes populate the Suggested Codes
+table automatically, no extra click needed → coder can add a code manually if the AI
+missed one, or pull one from Optum (see below). See `src/app/page.tsx` for the
+end-to-end flow, especially `codesFromSummary` (the analysis → codes-table bridge).
+
+There used to be a second, bulk "Get Codes via Optum (Optional)" button here that sent
+the whole summary to `POST /api/generate-codes` for a second, independently-sourced set
+of suggestions — it was removed (route deleted, button and its handler removed from
+`SummaryPanel.tsx`/`page.tsx`) because that endpoint was never more than a `501` stub
+("coming soon") with no concrete API behind it, unlike the two Optum features below,
+which hit a real endpoint. If bulk Optum code generation is ever scoped again, it needs
+a fresh design, not a revival of the old stub — don't resurrect `generateCodes`/
+`GenerateCodesRequest`/`generateCodesRequestSchema` from git history without rethinking
+what the endpoint should actually do.
 
 This is deliberately **reference-only, not a review workflow**: the app does not track
 accept/reject/modify decisions or any accuracy score — see "Reference-only tool" below
@@ -29,13 +37,19 @@ supports one. See "Domain model quirks worth knowing" below for the full shape.
 The model doesn't just transcribe whatever code the note already has, either — see
 "Codes are validated, not copied" below.
 
-There are now **three separate, unrelated Optum-related things** — don't conflate them:
-1. The bulk "Get Codes via Optum (Optional)" button (Step 2 above) — sends the whole
-   summary to `POST /api/generate-codes`, which is still a stub (`501`, "coming soon").
-2. The per-field "Search Optum" option next to any blank ICD-10/CPT/HCPCS code — this
+Before any of that, the coder can **import** a note (.txt/.docx/.pdf) or paste one in,
+then must explicitly run **"Clean Note"** to strip patient-identifying details before
+Analyze is meaningful to click — see "SOAP note import & de-identification" below. This
+is a real, live feature, and it's separate from — and stricter than — the older soft PHI
+guard described under "PHI / name handling" below.
+
+There are **two separate, unrelated Optum-related things** — don't conflate them (a
+third, the bulk "Get Codes via Optum" button, existed earlier and was removed — see
+above):
+1. The per-field "Search Optum" option next to any blank ICD-10/CPT/HCPCS code — this
    one is **live**, hits Optum's real RealTime eContent term-search API, and is
    documented in full under "Per-field Optum code search" below.
-3. The standalone "Look up a code" tool in the Suggested Codes table — also **live**,
+2. The standalone "Look up a code" tool in the Suggested Codes table — also **live**,
    hits the same real term-search API but with a coder-typed term instead of a field's
    own text, and adds a fresh row instead of filling an existing field. Documented
    under "Standalone Optum code lookup" below.
@@ -47,6 +61,11 @@ There are now **three separate, unrelated Optum-related things** — don't confl
 - Zod for request validation, Axios for the HTTP client, react-hot-toast for toasts
 - `openai` — official OpenAI SDK (v7, Responses API), used server-side only in
   `src/lib/openai.ts`
+- `mammoth` (.docx) and `pdf-parse` (.pdf) — server-side-only text extraction for
+  imported note files, used only in `api/import-note/route.ts`. `pdf-parse` (via
+  `pdfjs-dist`) is listed in `next.config.ts`'s `serverExternalPackages` — bundling it
+  breaks its internal worker-script lookup (see that file's comment and "SOAP note
+  import & de-identification" below); don't remove that entry.
 - Package manager: pnpm. Path alias `@/*` → `./src/*`
 
 ## Directory layout
@@ -69,11 +88,14 @@ There are now **three separate, unrelated Optum-related things** — don't confl
   centralizes turning a caught error into a user-facing string.
 - `src/lib/placeholders.ts` — `SOAP_NOTE_PLACEHOLDER`, the example text shown as the
   textarea's `placeholder` in `SoapInput.tsx`. This is illustrative UI copy, not mock
-  data — **there is no mock data or `MOCK_MODE` anywhere in this app**; both routes
-  always hit their real backend (or report "coming soon" if it isn't wired up yet, see
-  below). Don't reintroduce a mock path without being explicitly asked.
+  data — **there is no mock data or `MOCK_MODE` anywhere in this app**; every route
+  always hits its real backend. Don't reintroduce a mock path without being explicitly
+  asked.
+- `src/lib/deidentify.ts` — pure, dependency-free, framework-agnostic function
+  (`deidentifySoapNote`); safe to import client- or server-side. See "SOAP note import
+  & de-identification" below.
 
-## API routes: two live, one "coming soon"
+## API routes: all three live, no stubs
 
 - `POST /api/analyze` → **live, always**. Calls OpenAI via `analyzeWithOpenAI` in
   `src/lib/openai.ts`, using `OPENAI_API_KEY` (and optional `OPENAI_MODEL`, default
@@ -89,21 +111,24 @@ There are now **three separate, unrelated Optum-related things** — don't confl
   `{ results: OptumSearchNode[] }` or `{ error }` with `502`. This is the per-field
   "Search Optum" feature — see "Per-field Optum code search" below for the full
   picture (it is NOT the same thing as the route below).
-- `POST /api/generate-codes` → **not implemented yet — always returns `501` with
-  `{ error: "Optum integration is coming soon." }`** after validating the request body.
-  This is intentional, not a bug: it's the optional Step 2 ("Get Codes via Optum"), and
-  nobody's defined what a whole-summary-to-codes Optum call should even look like yet
-  (unlike the per-field search below, which has a concrete real endpoint). `lib/optum.ts`
-  now exists (see below) and already holds the `OPTUM_CLIENT_ID`/`OPTUM_CLIENT_SECRET`
-  credentials and token-fetch logic this route would need — when this feature is
-  scoped, add a new function there (validate its output against `SuggestedCode[]`,
-  throw a clear `Error` on failure so the route can map it to `502`), swap the
-  `NextResponse.json(...501...)` for the real call, and update this note — don't leave
-  it saying "coming soon" once it's live. The frontend already has correct handling for
-  both outcomes (see
-  `handleGenerateCodes` in `page.tsx`): on success it appends returned codes to the
-  table tagged `source: "Optum"`; on failure it calls `toast.error(...)` with the
-  message. No frontend change should be needed to go live here.
+- `POST /api/import-note` → **live, always**. Takes a `multipart/form-data` upload
+  (field name `file`), extracts plain text from a `.docx` (via `mammoth`) or `.pdf`
+  (via `pdf-parse`), returns `{ text }` or `{ error }` with `502`. **This is the one
+  route that doesn't validate via a `lib/schemas.ts` Zod schema** — it's a file upload,
+  not a JSON body, so it just checks the file exists and is under 10MB by hand; there's
+  no secret/AI call here, just local text extraction on our own server. `.txt` files
+  never reach this route — `SoapInput.tsx` reads those directly in the browser via
+  `file.text()`. See "SOAP note import & de-identification" below.
+**`POST /api/generate-codes` was removed** — it was the optional bulk "Get Codes via
+Optum" button's endpoint, but it never got past a `501` ("coming soon") stub since
+nobody defined what a whole-summary-to-codes Optum call should look like. The route
+file, `handleGenerateCodes`/the button in `page.tsx`/`SummaryPanel.tsx`, the
+`generateCodes` client function in `lib/api.ts`, `GenerateCodesRequest` in
+`lib/types.ts`, and `generateCodesRequestSchema` in `lib/schemas.ts` were all deleted
+together — if you find a reference to any of them, it's stale and should be removed, not
+reconnected. `lib/optum.ts`'s auth/token-fetch logic is untouched by this removal — it's
+still very much in use by `searchOptumCodes`, which backs both live per-field/standalone
+Optum features below.
 
 Keep the Zod validation at the top of each handler, and update `.env.example` (with a
 blank placeholder — never a real value) if you add new env vars.
@@ -117,13 +142,17 @@ ones a user pastes into chat, go in `.env.local` (gitignored) instead.
 A regex-based pre-check (`detectPersonName`, formerly `src/lib/phi.ts`) used to scan the
 raw SOAP note and hard-reject anything that looked like a person's name before any LLM
 call. It was removed because it wasn't reliable enough in practice (see the deleted
-file's history for the approach). The only guard left is a soft one: the system
-instruction in `lib/openai.ts` tells the model never to emit a person's name in its
-output. **The raw note itself is not currently screened for names before being sent to
-OpenAI** — if that's a hard requirement again, a regex heuristic alone was already tried
-and found lacking; consider a proper PHI/NER approach (or at least tightening the
-heuristic with real test notes before re-enabling a hard block) rather than restoring
-the same pattern unchanged.
+file's history for the approach). At the time, the only guard left was a soft one: the
+system instruction in `lib/openai.ts` telling the model never to emit a person's name in
+its output — the raw note itself wasn't screened before being sent to OpenAI.
+
+**That hard requirement came back** — see "SOAP note import & de-identification" below,
+which is a deliberately different strategy from the reverted `detectPersonName` attempt
+(scrub known-labeled fields + their exact values, rather than trying to detect "is this
+a name" in arbitrary free text) precisely because free text alone was already tried and
+found lacking here. It still isn't foolproof (see that section for the honest limits) —
+the soft output-side instruction in `lib/openai.ts` stays in place as a second layer,
+not a replacement.
 
 ## Non-medical input is hard-rejected — the gate lives in the model, not a regex
 
@@ -144,6 +173,201 @@ or the examples of what counts as "not medical" — don't bolt on a separate reg
 keyword check in front of it; that pattern already failed once for PHI detection (see
 above) for the same underlying reason: free text is too varied for a heuristic to gate
 reliably, and the model doing the analysis is already the best classifier available.
+
+## SOAP note import & de-identification
+
+Before a note goes anywhere near OpenAI, the coder can (a) **Import** a `.txt`/`.docx`/
+`.pdf` file or paste text directly into `SoapInput.tsx`'s textarea, then (b) must
+explicitly click **"Clean Note"**, which runs `deidentifySoapNote` (`lib/deidentify.ts`)
+over the current textarea contents and replaces it with the cleaned result in place.
+Analyze itself was deliberately left untouched (still just requires non-empty text) —
+this is a workflow convention enforced by the UI copy and the review step, not a code
+gate, per an explicit product decision; don't add a hard code-level gate forcing Clean
+before Analyze without being asked.
+
+**What "Clean Note" actually does** (`lib/deidentify.ts`, pure/dependency-free, no
+network call, works on any text regardless of where it came from). Three iterations so
+far, each driven by a real failure — see the full history comment at the top of that
+file, summarized here:
+- **v1**: single-line `Label: value` pairs against an exact label list. A real
+  EHR-exported header broke every assumption at once (name in running prose with no
+  label, `Label value` with no colon, unmatched label wording) — nothing got redacted.
+- **v2**: added format-based detectors (name shape, DOB, ID, SSN, phone, email) plus a
+  keyword-contains label scanner, and replaced matched values **in place**, broadcasting
+  every match across the whole document. That broadcast was itself a bug: a pharmacy
+  address like `"ALEXANDRIA, VA"` has the exact same shape as a patient's `"SURNAME,
+  First"` name, so it false-positive-matched — and because matches were replaced
+  *everywhere*, the unrelated `"VA"` in the clinic's own address at the top got wiped
+  too. Partial, in-place redaction of a fundamentally noisy administrative block turned
+  out to be the wrong strategy, not just under-tuned.
+- **v3**: stopped trying to surgically redact values inside
+  administrative/demographic content and instead **drops that content wholesale** —
+  none of a scheduling header, insurance block, care-team roster, or pharmacy list is
+  needed for coding, so there's no reason to keep fighting to redact individual values
+  inside it (an explicit product decision: send *none* of it, not a redacted version of
+  it). Concretely:
+  1. Find the first line that looks like real clinical content (originally
+     `CLINICAL_CONTENT_MARKER`, matching only a SOAP marker or "Chief
+     Complaint"/"History of Present Illness"/"HPI"/"Reason for Visit" — broadened
+     and renamed to `CHART_CONTENT_MARKER` in v4 below, see that entry for why).
+     Everything **before** it is dropped wholesale — not redacted, removed —
+     including otherwise-harmless fields like an appointment date, since the
+     product call here is "don't send any of the header," not "send a scrubbed
+     version of it." If no such line is found at all, nothing is dropped (safer to
+     fall back to per-line scrubbing than risk deleting an entire note that just
+     doesn't use recognizable section markers).
+  2. In whatever comes after the header, whole lines are dropped (not redacted) when
+     they're clearly administrative/contact content regardless of position: a
+     `Patient's Care Team`/`Patient's Pharmacies` section title, a `Prescription:
+     ... eligible` benefit-check line, or a line containing an NPI number, a `Fax
+     (...)`, or a `Ph (...)` — these shapes only ever appear in provider/pharmacy
+     contact blocks, never clinical narrative.
+  3. Every other line is scanned for DOB/ID/SSN/phone/email shapes and PHI-labeled
+     `Label: value` pairs (same keyword-contains label list as before), **strictly
+     per-line** — a match is never broadcast beyond the line it's found on. If
+     stripping the matched span(s) leaves nothing substantial behind
+     (`lineHasSubstantialContent` — a boilerplate/filler-word check), the whole line is
+     dropped; otherwise the line is kept with just that value replaced by `[PATIENT]`.
+- **v3.1**: v3 only carried the patient's *name* forward from the dropped header
+  (broadcasting it across the surviving clinical content so "Jane reports..." still
+  got caught). Everything else extracted from the header was discarded along with
+  it — so if e.g. the header's MRN showed up again in the body in a form no per-line
+  detector recognized on its own (a bare number with no "mrn"/"id#" keyword next to
+  it the second time), it slipped through. v3.1 stores *every* identifier
+  `collectIdentifiers` finds in the header — not just the name — in
+  `confirmedIdentifiers`, and broadcasts all of them the same way. Still safe against
+  the v2 broadcast bug because the *source* is bounded to the header region
+  specifically (already-confirmed administrative content, about to be dropped
+  entirely) rather than a name-shaped match found anywhere in the document.
+- **v3.2**: a real multi-page EHR export exposed two more gaps, both from
+  content that recurs *past* the header/footer boundaries v3/v3.1 relied on:
+  1. A clinic letterhead/address line (e.g. `"Privia - KOHU - Alexandria Medical
+     Associates • 6355 Walker Lane, ALEXANDRIA VA 22310-3247"`) repeats as a running
+     page header throughout the export, not just once before the clinical marker —
+     so only the first occurrence (inside the dropped header) was ever caught; every
+     later recurrence survived untouched. Fixed with a new whole-line drop,
+     `STREET_ADDRESS_LINE`, checked position-independently like `NPI_LINE`/`FAX_LINE`
+     — a `"<number> <street>, <CITY> <ST> <ZIP>"` shape only ever appears in a
+     letterhead/mailing address, never clinical narrative, and it's shape-based (not
+     tied to any one clinic's actual name/address, so it generalizes to other
+     practices' letterheads too).
+  2. Provider names in a closing "Return to Office" / "Encounter Sign-Off" block
+     (follow-up scheduling instructions, sign-off attestation) were never caught,
+     because `NAME_PATTERN` deliberately only runs on the header (see the
+     COPD/Exacerbation note below for why) and this block sits well past it, in the
+     clinical body. That block has zero coding value regardless of whose name is in
+     it, so — same call as the header — it's dropped wholesale rather than patched
+     with another per-line name detector. `FOOTER_MARKER` finds the first line
+     matching `"Return to Office"` or `"Encounter Sign-Off"` and everything from
+     there to the end of the note is removed, the same way the pre-clinical header
+     is removed. Same safe-fallback rule as the header: if no such line is found,
+     nothing is dropped, rather than risking truncating a note that ends differently.
+- **v3.3 (current)**: the same repeating per-page banner that motivated
+  `STREET_ADDRESS_LINE` above also carries the patient's own name/id/dob on every
+  page (`"NAME (id #12345678, dob: 01/02/1980)"`), and a real export had this written
+  in a different name order/format on one occurrence than the header's — leaving a
+  partially-redacted `"[PATIENT] SURNAME (id #[PATIENT], dob: [PATIENT])"` fragment
+  instead of a clean removal once broadcast only matched some of the name's tokens.
+  Rather than chasing every name-formatting variant `collectIdentifiers`'s tokenizer
+  might miss, this banner now gets the same wholesale-drop treatment as the
+  letterhead line: `PATIENT_BANNER_LINE` matches the `"(id #..., dob:
+  .../.../...)"` signature — a shape that only ever appears in this exact
+  demographic banner, never clinical narrative — and drops the whole line, whatever
+  name precedes it, wherever it recurs. Explicit product call (per the "remove
+  entirely, don't redact-and-hope" principle above): don't depend on correctly
+  tokenizing/broadcasting a name inside this banner every time; just remove it.
+- **v4** fixed a much bigger problem than any single missed identifier: on
+  a real ~12,500-word visit summary, Clean Note collapsed it to ~2,500 words,
+  silently deleting Vitals, Allergies, Medications, Vaccines, Problems, Family
+  History, Social History, Surgical History, GYN History, Obstetric History, and
+  Past Medical History — all genuine, coding-relevant documentation, not
+  administrative noise. The cause: the header/body boundary (previously
+  `CLINICAL_CONTENT_MARKER`) only recognized narrative SOAP/HPI-style section names
+  as "real clinical content starts here." On a note whose layout puts a full chart
+  review *before* the HPI narrative (a very common EHR visit-summary shape), all of
+  that chart review got treated as pre-clinical "header" and dropped wholesale
+  right along with the actual demographic banner. Fixed by renaming it to
+  `CHART_CONTENT_MARKER` and broadening it to also recognize these standard EHR
+  review-section headers (Vitals, Allergies, Medications, Vaccines, Problems,
+  Family/Social/Surgical/Past Medical/GYN/Obstetric History, Screening, ROS,
+  Physical Exam) as equally valid starts of real documentation — narrowing the
+  dropped region back down to whatever genuinely comes before the *first* real
+  section (typically just a short letterhead/demographic banner, if the export even
+  has one), not everything before the narrative specifically. The same real note
+  also reproduced the v2 "VA" bug in a new spot: with the header containing both the
+  clinic's letterhead/address and the patient banner, `NAME_PATTERN` scanning that
+  whole header for "ALLCAPS, Word" shapes pulled a false identifier straight out of
+  the address text, and v3.1's broadcast then replaced it everywhere — corrupting
+  the clinical abbreviation `"US"` (ultrasound) and the pharmacy name `"WEGMANS
+  ALEXANDRIA PHARMACY"`. Fixed by filtering `STREET_ADDRESS_LINE`/`NPI_LINE`/
+  `FAX_LINE`/`PROVIDER_PHONE_LINE`/`SECTION_TITLE_LINE`/
+  `PRESCRIPTION_ELIGIBILITY_LINE`-shaped lines out of the header *before* running
+  `collectIdentifiers` on it, so `NAME_PATTERN` never sees that text at all.
+- **v4.1 (current)**: verifying v4 against another real note surfaced a pre-existing,
+  unrelated bug — a bare `"(703) 922-0264"` (the patient's own contact number) sitting
+  on its own line right under Chief Complaint was never redacted at all.
+  `PHONE_PATTERN`'s shared leading `\b` sat before an alternation whose first branch
+  starts with `"("`, but `\b` only holds at a word/non-word transition, and `"("` is
+  non-word on both sides when preceded by whitespace or line-start (the normal case)
+  — so the parenthesized-format branch, `"(XXX) XXX-XXXX"`, the single most common
+  US phone format, silently never matched anything, in any context, since this
+  pattern was added in v2. Fixing detection surfaced a second instance of the exact
+  same root cause: the per-line and header-broadcast redaction steps each rebuild a
+  fresh `` `\b${escapeRegExp(value)}\b` `` from the raw matched string, which fails
+  identically whenever that string itself starts or ends with a non-word character —
+  so a line with other real content around the phone number would detect it but then
+  silently fail to redact it. Fixed both by adding `toBoundaryPattern`, which only
+  adds `\b` at an edge whose own character is a word character, and using it
+  everywhere a captured identifier value gets turned into a replace pattern.
+- Returns `{ cleaned, identifiersFound, mentionsRedacted }` — `SoapInput.tsx` shows a
+  success toast summarizing both, or, if nothing at all was found/dropped, an explicit
+  **warning** toast ("No identifying details recognized — please check the note
+  manually") rather than silently doing nothing.
+
+**Why NAME_PATTERN only ever touches header lines, never body lines** (a regression
+introduced and caught while building v3, fixed before it shipped): re-running the same
+name-shape check per-line on the *body* to catch local false positives seemed safe
+since matches were no longer broadcast — but the pattern itself still fires on a real
+clinical term shaped like "ALLCAPS, Word" (`"COPD, Exacerbation"`), and a per-line-only
+match still corrupts that one line. The fix is to never run `NAME_PATTERN` outside the
+dropped header at all — it exists solely to identify the confirmed patient name, not as
+a general-purpose "look for names anywhere" detector.
+
+**The honest limitation** (say this to anyone who asks, don't undersell it): this is a
+pattern-matcher, not identity understanding. It cannot catch a name mentioned without a
+recognized shape/label, a nickname, an unusual header wording not covered by the keyword
+list, or an administrative-content shape not covered by `SECTION_TITLE_LINE`/
+`NPI_LINE`/`FAX_LINE`/`PROVIDER_PHONE_LINE`. **This is not a permanent,
+one-time-verify-then-forget safeguard**: the cleaned note should always be shown for the
+coder to review before Analyze, every time, not just while the feature is new — three
+rounds of a real, representative EHR export finding a new gap each time is exactly why.
+If you're ever asked to make Clean automatic/silent or skip the review step "since it's
+already reliable," push back — see "PHI / name handling" above for why a past
+heuristic-only approach was explicitly abandoned here. If another real example slips
+through again, that's expected — add a detector (or a whole-line drop rule) for the
+specific shape that failed, the way this section's history shows; don't try to
+generalize preemptively for shapes you haven't actually seen fail, and don't reach for
+broadcasting a match across the whole document again without re-reading the v2 bug
+above first.
+
+**Import** (`SoapInput.tsx`'s "Import" button + hidden file input,
+`SUPPORTED_IMPORT_EXTENSIONS` in `lib/api.ts`): `.txt` is read directly in the browser
+via `file.text()` — no network call, no server involvement. `.docx`/`.pdf` are uploaded
+to `POST /api/import-note` (see the API routes section above) since parsing those
+formats needs real libraries (`mammoth`, `pdf-parse`) that only run server-side. This
+does still mean the raw, un-cleaned file reaches our own backend for text extraction —
+that's fine (it's our own server, not a third-party AI, and it's the same trust boundary
+`/api/analyze` already operates in), but the extracted text still must go through Clean
+Note before Analyze; importing does not clean automatically.
+
+**A real bundling gotcha, already fixed — don't remove the fix**: `pdf-parse` (via
+`pdfjs-dist`) locates its own worker script via a runtime require/import relative to its
+package location. Bundling it (Turbopack/webpack) rewrites that path and breaks it with
+`Setting up fake worker failed: Cannot find module .../pdf.worker.mjs`. Fixed by adding
+`pdf-parse`/`pdfjs-dist` to `serverExternalPackages` in `next.config.ts`, which tells
+Next.js to let Node resolve them straight from `node_modules` instead of bundling them.
+If PDF import ever breaks with a "fake worker"/module-not-found error again after a
+dependency bump, check that entry first before assuming the library itself regressed.
 
 ## Reference-only tool — accept/reject/modify workflow and accuracy tracking removed
 
@@ -191,11 +415,10 @@ one), `SummaryPanel.tsx` shows a "Search Optum" link right under that blank fiel
 Clicking it queries Optum's real **RealTime eContent** term-search API and renders the
 results as a collapsible tree; clicking a leaf code fills the field (and adds/updates
 the matching row in the Suggested Codes table, tagged `source: "Optum"`). This is a
-**different, unrelated feature from the bulk "Get Codes via Optum" button** — see
-"What this app is" above — and a different, unrelated feature from the standalone
-"Look up a code" tool in `CodesTable.tsx` too, see "Standalone Optum code lookup"
-below. There are now **three** distinct Optum-related things in this app; don't
-conflate any of them.
+**different, unrelated feature from the standalone "Look up a code" tool** in
+`CodesTable.tsx`, see "Standalone Optum code lookup" below — don't conflate the two
+(a third, the bulk "Get Codes via Optum" button, existed earlier and was removed, see
+"What this app is" and "API routes" above).
 
 The widget itself lives in its own file, `src/components/OptumCodeSearch.tsx` (it used
 to be defined inline inside `SummaryPanel.tsx` — extracted so both this and the
@@ -288,11 +511,9 @@ is no existing field to also fill, unlike the per-field version.
   "wheelchair" under HCPCS and adding more than one accessory code). It closes only via
   the modal's close mechanisms (its "×", Escape, or clicking the backdrop), which also
   resets the term/type/results back to defaults.
-- Each `SuggestedCode` row it creates gets a fresh id off the same `optumCodeCounter`
-  used by the bulk "Get Codes via Optum" button (`optum-${n}`) — both are genuinely
-  `source: "Optum"` rows, so sharing the counter just keeps ids unique app-wide; it
-  does not imply the two features are related (see "Per-field Optum code search"
-  above — they're not).
+- Each `SuggestedCode` row it creates gets a fresh id off `optumCodeCounter` in
+  `page.tsx` (`optum-${n}`) — a module-level counter, not per-render state, so ids
+  stay unique across repeated additions.
 - Selecting the same code twice appends two separate rows (no dedup) — same as the
   existing manual "Add missed code" behavior, so this isn't a new inconsistency.
 
@@ -324,13 +545,15 @@ is no existing field to also fill, unlike the per-field version.
   one visible code actually has one (`hasModifierOrUnits` in `CodesTable.tsx`) — this is
   the same "shown in UI if the details are present" pattern as collapsed Negations
   below, so a note with no modifiers/units doesn't grow two dash-filled columns.
-- `SuggestedCode.source` is `'AI' | 'Optum' | 'Manual'`. `'AI'` rows come from Step 1
-  (`codesFromSummary`, populated automatically on analyze). `'Optum'` rows come from
-  Step 2 (`handleGenerateCodes` in `page.tsx`, the optional "Get Codes via Optum"
-  button — currently always errors since `/api/generate-codes` isn't implemented, see
-  above). `'Manual'` is a coder-typed addition (via `AddCodeRow`/`handleAddManual`);
-  there's no default status attached to it — see "Reference-only tool" above, there
-  is no `CodeStatus` concept anymore.
+- `SuggestedCode.source` is `'AI' | 'Optum' | 'Manual'`. `'AI'` rows come from
+  `codesFromSummary`, populated automatically on analyze. `'Optum'` rows come from
+  either live Optum feature — the per-field search (`handleOptumCodeSelected`) or the
+  standalone lookup (`handleAddFromOptum`) — see those sections below; there used to
+  be a third source, the bulk "Get Codes via Optum" button, but it was removed (see
+  "API routes" above) since it never got past a `501` stub. `'Manual'` is a
+  coder-typed addition (via `AddCodeRow`/`handleAddManual`); there's no default status
+  attached to it — see "Reference-only tool" above, there is no `CodeStatus` concept
+  anymore.
 - `ClinicalSummary.briefSummary` — despite the name, this is a **crisp clinical
   impression, not a sentence**: a few words naming the primary diagnosis/complaint
   (e.g. "Lower back pain", "Type 2 diabetes with neuropathy"), the way a coder would

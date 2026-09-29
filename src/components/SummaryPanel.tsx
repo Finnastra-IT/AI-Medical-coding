@@ -21,16 +21,12 @@ interface OptumCodeSelection {
 interface SummaryPanelProps {
   summary: ClinicalSummary | null;
   onChange: (summary: ClinicalSummary) => void;
-  onGenerateCodes: () => void;
-  isGeneratingCodes: boolean;
   onOptumCodeSelected: (selection: OptumCodeSelection) => void;
 }
 
 export default function SummaryPanel({
   summary,
   onChange,
-  onGenerateCodes,
-  isGeneratingCodes,
   onOptumCodeSelected,
 }: SummaryPanelProps) {
   const [negationsOpen, setNegationsOpen] = useState(false);
@@ -218,43 +214,6 @@ export default function SummaryPanel({
               )
             )}
           </FieldGroup>
-
-          <div className="flex flex-col items-start gap-1.5">
-            <button
-              type="button"
-              onClick={onGenerateCodes}
-              disabled={isGeneratingCodes}
-              className="inline-flex items-center justify-center gap-2 self-start rounded-lg border border-teal-600 px-4 py-2 text-sm font-medium text-teal-700 transition-colors hover:bg-teal-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-500 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-400"
-            >
-              {isGeneratingCodes && (
-                <svg
-                  className="h-4 w-4 animate-spin"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  aria-hidden="true"
-                >
-                  <circle
-                    className="opacity-25"
-                    cx="12"
-                    cy="12"
-                    r="10"
-                    stroke="currentColor"
-                    strokeWidth={4}
-                  />
-                  <path
-                    className="opacity-75"
-                    fill="currentColor"
-                    d="M4 12a8 8 0 0 1 8-8v4a4 4 0 0 0-4 4H4Z"
-                  />
-                </svg>
-              )}
-              {isGeneratingCodes ? "Checking Optum..." : "Get Codes via Optum (Optional)"}
-            </button>
-            <p className="text-xs text-slate-400">
-              ICD-10/CPT codes above are already suggested by OpenAI. This
-              optionally adds a second set of coded suggestions from Optum.
-            </p>
-          </div>
         </div>
       )}
     </section>
