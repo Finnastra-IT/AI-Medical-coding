@@ -530,10 +530,39 @@ generator needs its own HCPCS line, but — since it can't confidently identify 
 manufacturer's device code applies — it left the code blank and added a
 `clarificationsNeeded` item asking for the device identity, rather than guessing.
 That's the intended behavior from the "never guess a code you're not confident in"
-instruction, not a gap. (Live re-verification of attempt 3 against both notes was
-cut short by the OpenAI account running out of API credits mid-session — one clean
-confirming run on the sacral note before that happened; re-run a few more trials on
-both notes once credits are restored before treating this as fully settled.)
+instruction, not a gap. (Re-verified attempt 3 after an earlier mid-session OpenAI
+credits outage was resolved: 3/3 clean runs on the sacral note — exactly `64561`,
+`64590`, `C1767`, no `C1778` — and the PNS note still correctly left its own generator
+code blank with a clarification given its manufacturer ambiguity.)
+
+## ICD-10 specificity comes from the diagnosis statement, not the procedure target
+
+A coder's review of the PNS implant note's `G58.8`/`G57.81` flip-flopping (see the
+non-determinism discussion in `lib/openai.ts`'s instructions above) resolved it with a
+rule, not a code preference: she would code the more specific `G57.81` ("...of right
+lower limb") **if the diagnosis/assessment statement itself named the nerve** — but
+this note's Assessment line reads only `"Other specified mononeuropathies - G58.8"`,
+with no nerve named there (the nerve — "right infrapatellar saphenous nerve" — is only
+named in the Procedure section). Since the diagnosis statement itself doesn't specify
+it, the generic `G58.8` is correct, even though the procedure target is specific.
+
+This is a mechanically checkable rule — "does the diagnosis/assessment line itself
+name the structure" — not an open-ended specificity judgment, which is exactly why it
+fixed the flip-flopping: added to the `icd10Hint` bullet in `SYSTEM_INSTRUCTION`,
+instructing the model to derive anatomic specificity only from the diagnosis
+statement itself, never imported from the procedure description or elsewhere in the
+note just because a structure is named there. Verified 4/4 consistent runs on the PNS
+note post-fix (previously alternating roughly evenly between the two codes), with no
+effect on the sacral note's diagnoses or either note's procedure codes.
+
+Coding the generic form correctly doesn't mean the gap should go unmentioned, though —
+whenever the diagnosis statement is less specific than a structure named elsewhere in
+the note (this note's exact case), a `clarificationsNeeded` item is added noting the
+mismatch and that a more specific code may be available if the provider
+confirms/updates the diagnosis statement, so the coder can decide whether to query it.
+Verified 3/3 runs: `G58.8` stayed stable and the mismatch was flagged every time, with
+wording varying (e.g. "...while the procedure identifies the right infrapatellar
+saphenous nerve...") but the substance consistent.
 
 ## Per-field Optum code search — real integration, live
 

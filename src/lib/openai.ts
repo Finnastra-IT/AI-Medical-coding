@@ -125,6 +125,21 @@ verify rather than having it resolved silently. This applies to both "icd10Hint"
     add a "clarificationsNeeded" item asking for whatever detail would let a
     code be assigned. A blank code a coder fills in is safer than a wrong one
     that goes unnoticed.
+  - Anatomic specificity (e.g. which nerve, which limb) for "icd10Hint" must
+    come from what the diagnosis/assessment statement ITSELF documents — do not
+    import extra anatomic detail from the procedure description or elsewhere in
+    the note just because a specific structure is named there. E.g. if the
+    diagnosis line reads only "Other specified mononeuropathies" without naming
+    a nerve, code the generic form (e.g. G58.8) even if the procedure section
+    separately names a specific nerve — don't upgrade to a more specific,
+    limb/nerve-coded diagnosis (e.g. G57.81) on that basis alone. If the
+    diagnosis statement itself names the structure, code to that specificity as
+    usual. Whenever this happens — a more specific structure is named elsewhere
+    in the note (e.g. in the procedure section) than in the diagnosis statement
+    itself — add a "clarificationsNeeded" item noting the mismatch and that a
+    more specific code may be available if the provider confirms/updates the
+    diagnosis statement, so the coder can decide whether to query it rather than
+    the gap going unnoticed.
 - "procedures": each procedure, service, supply, or billable item performed,
   administered, or ordered — including the encounter's own Evaluation &
   Management (E/M) service when one applies (see below) — with a short unique
