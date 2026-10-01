@@ -119,6 +119,12 @@ export default function Home() {
     ]);
   }
 
+  function handleReset() {
+    setSoapNote("");
+    setSummary(null);
+    setCodes([]);
+  }
+
   async function handleExport() {
     const payload = { summary, codes };
     try {
@@ -140,6 +146,8 @@ export default function Home() {
               value={soapNote}
               onChange={setSoapNote}
               onAnalyze={handleAnalyze}
+              onReset={handleReset}
+              canReset={soapNote.trim().length > 0 || summary !== null || codes.length > 0}
               isAnalyzing={isAnalyzing}
             />
           </div>

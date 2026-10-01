@@ -14,6 +14,8 @@ interface SoapInputProps {
   value: string;
   onChange: (value: string) => void;
   onAnalyze: () => void;
+  onReset: () => void;
+  canReset: boolean;
   isAnalyzing: boolean;
 }
 
@@ -21,6 +23,8 @@ export default function SoapInput({
   value,
   onChange,
   onAnalyze,
+  onReset,
+  canReset,
   isAnalyzing,
 }: SoapInputProps) {
   const [isImporting, setIsImporting] = useState(false);
@@ -46,6 +50,11 @@ export default function SoapInput({
     } finally {
       setIsImporting(false);
     }
+  };
+
+  const handleReset = () => {
+    onReset();
+    toast.success("Cleared note, summary, and codes");
   };
 
   const handleClean = () => {
@@ -144,6 +153,16 @@ export default function SoapInput({
           )}
           {isAnalyzing ? "Analyzing..." : "Analyze Note"}
         </button>
+
+        <button
+          type="button"
+          onClick={handleReset}
+          disabled={!canReset || isAnalyzing}
+          className="inline-flex items-center justify-center gap-2 self-start rounded-lg px-4 py-2 text-sm font-medium text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-500 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:text-slate-300 disabled:hover:bg-transparent"
+        >
+          <ResetIcon className="h-4 w-4" />
+          Reset
+        </button>
       </div>
       <p className="text-xs text-slate-400">
         Run &ldquo;Clean Note&rdquo; to strip patient-identifying details
@@ -168,6 +187,24 @@ function ImportIcon({ className }: { className?: string }) {
       <path d="M12 3v12" />
       <path d="m7 10 5 5 5-5" />
       <path d="M5 21h14" />
+    </svg>
+  );
+}
+
+function ResetIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={2}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      aria-hidden="true"
+    >
+      <path d="M3 12a9 9 0 1 0 3-6.7" />
+      <path d="M3 4v5h5" />
     </svg>
   );
 }

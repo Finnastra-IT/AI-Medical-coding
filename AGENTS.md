@@ -185,6 +185,20 @@ this is a workflow convention enforced by the UI copy and the review step, not a
 gate, per an explicit product decision; don't add a hard code-level gate forcing Clean
 before Analyze without being asked.
 
+**"Reset"** (also in `SoapInput.tsx`, next to Clean Note/Analyze Note) clears all three
+pieces of top-level state at once — `soapNote`, `summary`, and `codes` — via
+`handleReset` in `page.tsx`, not just the textarea; this is deliberate, since a
+half-reset (e.g. clearing the note but leaving a stale summary/codes table on screen)
+would be more confusing than not resetting at all. It's disabled whenever there's
+nothing to reset (`canReset`, computed in `page.tsx` from all three pieces of state,
+not just whether the textarea is empty — the note could be cleared by hand while a
+summary/codes from an earlier analysis are still showing) and, importantly, **while
+`isAnalyzing` is true** — resetting mid-request doesn't cancel the in-flight
+`analyzeNote` call, so if it were allowed, a just-cleared page could get silently
+overwritten a moment later when that stale response resolves and calls
+`setSummary`/`setCodes`. Don't remove that `isAnalyzing` guard without also handling
+that race (e.g. an abort controller) some other way.
+
 **What "Clean Note" actually does** (`lib/deidentify.ts`, pure/dependency-free, no
 network call, works on any text regardless of where it came from). Three iterations so
 far, each driven by a real failure — see the full history comment at the top of that
@@ -406,6 +420,120 @@ through verbatim without checking it — that was discarded specifically because
 the app a rubber stamp for a doctor's documentation mistakes instead of a coder's
 independent check. If you touch this logic again, keep the "verify, don't blindly
 trust either party" framing rather than defaulting back to verbatim copy.
+
+## Resolving conflicting details within a single note
+
+A note can contradict itself across its own sections — most commonly a stated
+Postoperative Diagnosis vs. the Findings/procedure narrative that follows it, or a
+Preoperative vs. Postoperative Diagnosis. `SYSTEM_INSTRUCTION` resolves this with an
+explicit priority, highest first: **(1) findings-type statements** describing what was
+actually observed/discovered — whether under an explicit "Findings" heading or
+described elsewhere in the procedure narrative — **(2) the postoperative diagnosis**,
+**(3) the preoperative diagnosis/estimate**. This only kicks in on a genuine
+*conflict* (something that contradicts a higher-priority source) — most notes' findings
+just add detail that agrees with the diagnosis, and the postoperative diagnosis is still
+used normally in that ordinary case; don't let this instruction make the model
+second-guess a diagnosis every time findings are merely present.
+
+Two real notes drove this, both still useful as regression cases if this logic ever
+needs revisiting:
+- A hernia repair note: `3.5 cm` preoperative estimate vs. `12.0 cm` postoperative
+  diagnosis/intraoperative finding (multiple defects combined). Preop-vs-postop
+  conflict — resolved by using the confirmed `12.0 cm` figure, which flips the CPT size
+  bracket from `49593` (3–10cm) to the correct `49595` (>10cm).
+- A renal fluoroscopy note: Postoperative Diagnosis still read "Calculus of kidney"
+  (apparently carried over unedited from the Preoperative Diagnosis), but the Findings
+  explicitly stated no renal stone was identified and that the visible calcifications
+  were confirmed to be outside the kidney. Findings outrank the stated postop diagnosis
+  here — the model determines its best-effort diagnosis from the negative finding
+  instead of defaulting to "Calculus of kidney," and always adds a
+  `clarificationsNeeded` item spelling out the contradiction (e.g. "the postoperative
+  diagnosis states kidney calculus, but the findings describe no renal stone
+  identified — confirm the correct diagnosis") so the coder can verify with the
+  provider rather than have it resolved silently.
+
+**A real ceiling worth knowing before chasing more consistency here**: `OPENAI_MODEL`
+(currently `gpt-5.6-sol` in `.env.local`, a reasoning-tier model) rejects both
+`temperature` and `top_p` outright (confirmed with a direct test call — both return a
+`400 Unsupported parameter` error), and the Responses API doesn't expose a `seed`
+parameter at all. So there is no supported way to force full determinism via the API.
+This conflict-resolution priority narrows how often the model lands on the wrong side
+of a genuine contradiction, and reliably ensures the contradiction itself always gets
+surfaced in `clarificationsNeeded` — but the exact fallback code it picks when a
+conflict like the kidney example above occurs can still vary run to run (there isn't
+always a single obvious ICD-10 code for e.g. "suspected but ruled out"). Don't treat
+future variance here as evidence this instruction isn't working — check whether the
+contradiction is still being *flagged* consistently before assuming it's regressed.
+
+## A targeted fix, not a generic one — "incision" doesn't always mean an open approach
+
+On a real sacral neuromodulation note, the model consistently (reproduced 3/3 runs)
+mis-selected CPT `64581` ("Incision for implantation of neurostimulator electrode
+array... sacral nerve") instead of the correct `64561` ("**Percutaneous** implantation
+of neurostimulator electrode array... sacral nerve"), even generating its own
+description calling the approach "incisional." The actual documented technique was
+needle → guidewire → fascial dilator — standard percutaneous placement — with a small
+2.0cm incision made only to visualize the guidewire/foramen externally, not to
+surgically dissect down to the nerve. The model was anchoring on the literal word
+"incision" appearing in the note, without registering that an incision made purely for
+visualization during an otherwise needle/wire-based approach doesn't make the approach
+"open."
+
+Fixed with a narrow instruction scoped specifically to peripheral/sacral nerve
+electrode/lead implantation (see the `cptHint` bullet in `SYSTEM_INSTRUCTION`), not a
+sitewide rule about inferring surgical approach from keyword presence generally —
+deliberately, per this file's own standing principle (see the de-identification
+history above for the same lesson learned the hard way): fix the specific shape that
+actually failed, don't generalize preemptively for other procedure families you
+haven't actually seen fail the same way. If the same "incision ≠ open approach"
+mistake turns up on an unrelated procedure later, that's the signal to generalize it
+then, not now.
+
+## Implanted device supply codes: the test is "does the procedure code already name this part," not a device allowlist
+
+A real sacral neuromodulation note exposed a gap: the coder team confirmed that
+`C1767` (the HCPCS code for the implanted Axonics generator/battery) should be
+reported as its own procedure line alongside `64561`/`64590` — the model wasn't
+generating it at all, likely because the bundling rule above ("don't list a minor
+incidental step separately") was over-applying to it.
+
+This went through three iterations before landing on a rule worth keeping:
+1. First attempt: "implanted device/hardware" generically gets its own HCPCS line.
+   Too broad — the model started also adding a supply code for the
+   **electrode/lead array** (`C1778`), inconsistently (sometimes present, sometimes
+   not, across otherwise-identical runs), which the coder team confirmed is wrong —
+   confirmed ground truth for this note is exactly `64561`, `64590`, `C1767`,
+   nothing else.
+2. Second attempt: narrowed to literally "an implantable pulse generator or
+   battery" by name, excluding the lead explicitly. This fixed the immediate case
+   (confirmed 3/3 runs) but was a hardcoded device-type allowlist — it would have
+   silently failed to catch an *unrelated* device family's generator/separately-
+   costed hardware the same way, since nothing in the instruction generalized past
+   "generator or battery."
+3. **Current**: replaced the device-name check with a structural test — does the
+   *inserting procedure's own code description* already name this exact component
+   as the thing it places? A neurostimulator "electrode array" placement code
+   (`64561`) already covers the lead itself, so the lead doesn't get a separate
+   supply code. A "pulse generator" *insertion* code (`64590`) describes the act of
+   inserting an already-manufactured device, not the device itself, so the
+   generator's own cost isn't captured by that procedure code and does need its
+   own line. This is the same conclusion as attempt 2 for this specific note, but
+   stated as a test that applies to any device/procedure pair (a cardiac device
+   generator, an infusion pump, etc.) the model hasn't been told about by name —
+   not a list to extend every time a new device family shows up in a note.
+
+Re-tested against the earlier PNS implant note (a different device family, with its
+own pre-existing ambiguity — the note names three different manufacturers for the
+same device: Nalu, Curonix, and Boston Scientific) to confirm attempt 2 generalized
+correctly before moving to attempt 3: the model also recognized that note's
+generator needs its own HCPCS line, but — since it can't confidently identify which
+manufacturer's device code applies — it left the code blank and added a
+`clarificationsNeeded` item asking for the device identity, rather than guessing.
+That's the intended behavior from the "never guess a code you're not confident in"
+instruction, not a gap. (Live re-verification of attempt 3 against both notes was
+cut short by the OpenAI account running out of API credits mid-session — one clean
+confirming run on the sacral note before that happened; re-run a few more trials on
+both notes once credits are restored before treating this as fully settled.)
 
 ## Per-field Optum code search — real integration, live
 

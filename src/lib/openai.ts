@@ -88,6 +88,22 @@ the full analysis below.
   co-primary, join them briefly (e.g. "Diabetes with neuropathy; hypertension")
   — but default to naming just one. Never a restatement of the note's sentences,
   never a full sentence with a verb.
+When a note states conflicting information about the same detail at different points,
+resolve it using this priority, highest first: (1) findings-type statements describing
+what was actually observed/discovered — whether under an explicit "Findings" heading or
+described elsewhere, e.g. in the procedure narrative — (2) the postoperative diagnosis,
+(3) the preoperative diagnosis or a preoperative estimate. This only applies when
+something genuinely CONFLICTS with a higher-priority source (e.g. findings that
+contradict the stated diagnosis, not findings that merely add detail to it) — most notes
+won't have this conflict at all, and the postoperative diagnosis should still be used
+normally when nothing contradicts it. When a genuine conflict like this does occur,
+still determine your best-effort "icd10Hint"/"cptHint" from the highest-priority source
+available, AND add a "clarificationsNeeded" item describing the contradiction in plain
+language (e.g. "The postoperative diagnosis states kidney calculus, but the findings
+describe no renal stone identified — confirm the correct diagnosis.") so the coder can
+verify rather than having it resolved silently. This applies to both "icd10Hint" and
+"cptHint" below.
+
 - "diagnoses": each distinct diagnosis, with a short unique "id" (e.g. "dx-1"), any
   explicit attributes (status, severity, laterality, relevant values) as
   label/value pairs, and "icd10Hint": always work out the correct ICD-10-CM code
@@ -112,7 +128,33 @@ the full analysis below.
 - "procedures": each procedure, service, supply, or billable item performed,
   administered, or ordered — including the encounter's own Evaluation &
   Management (E/M) service when one applies (see below) — with a short unique
-  "id" (e.g. "px-1"), and:
+  "id" (e.g. "px-1"). Do NOT list a minor procedure performed only incidentally as
+  part of a more extensive procedure in the same session (e.g. an in-and-out
+  bladder catheterization during an unrelated major surgery, or device programming
+  performed in the same operative session as that device's own implantation) as
+  its own separately billable procedure — it's typically included in the primary
+  procedure's global package. If you're genuinely unsure whether something is
+  bundled or separately reportable, add a "clarificationsNeeded" item instead of
+  presenting it as a clean code.
+  - Exception — an implanted device/hardware component can still need its own
+    procedure entry (with "codeType": "HCPCS") alongside the procedure that
+    inserts it, the opposite situation from the bundling rule above. The test:
+    does the inserting procedure's OWN code description already name this exact
+    component as the thing it places (e.g. a neurostimulator "electrode array"
+    placement code already covers the lead itself — don't also code the lead as a
+    separate supply) — or is the component a distinct, separately-manufactured
+    piece of hardware that the inserting procedure's code describes only the
+    *act* of inserting (e.g. a "insertion of pulse generator" code describes
+    inserting the device, not the device itself, so the generator's own cost
+    isn't captured by that procedure code and needs its own line)? Only the
+    latter gets a separate supply code. This applies generally — e.g. a
+    neurostimulator generator/battery, a cardiac device generator, an infusion
+    pump — not only to the one device family you've seen this in. Work out the
+    specific code yourself from the device described (it varies by device
+    characteristics, e.g. rechargeable vs. non-rechargeable) — never guess a
+    code you're not confident in; add a "clarificationsNeeded" item instead if
+    you can't determine it confidently.
+  For every procedure you do include:
   - "cptHint": always work out the correct code yourself from what was
     actually performed/administered — never copy a code straight from the
     note without checking it, since providers can mis-code procedures too.
@@ -125,6 +167,17 @@ the full analysis below.
     - If you cannot confidently determine a correct code at all, set
       "cptHint" to null rather than guessing, and add a "clarificationsNeeded"
       item asking for whatever detail would let a code be assigned.
+    - Whenever a code depends on a specific measurement or severity threshold
+      (e.g. a size-based bracket, as with hernia repairs), state that exact
+      measurement or finding in the procedure's "description" (e.g. "...total
+      repaired defect 12.0 cm...") so the coder can immediately cross-check it
+      against "cptHint" at a glance — never let the code and the stated
+      finding disagree with each other.
+    - For peripheral or sacral nerve electrode/lead implantation specifically: a
+      small incision made only to visualize a needle or guidewire (not to
+      surgically dissect down to the nerve) is still a percutaneous approach
+      (e.g. CPT 64561), not an open/incisional approach (e.g. CPT 64581) — don't
+      classify it as incisional just because the note mentions an incision.
   - "codeType": which code set "cptHint" is drawn from —
     - "E/M": the visit's own evaluation & management code (e.g. 99202-99215
       for office visits, 99221-99239 for inpatient) reflecting the
