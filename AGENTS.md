@@ -66,6 +66,9 @@ above):
   `pdfjs-dist`) is listed in `next.config.ts`'s `serverExternalPackages` — bundling it
   breaks its internal worker-script lookup (see that file's comment and "SOAP note
   import & de-identification" below); don't remove that entry.
+- `xlsx` (SheetJS) — client-side-only, used only in `src/lib/excelExport.ts` to read/
+  write the `.xlsx` binary format for the "Export to Excel" feature. See "Exporting
+  suggested codes to a persistent Excel file" below.
 - Package manager: pnpm. Path alias `@/*` → `./src/*`
 
 ## Directory layout
@@ -94,6 +97,14 @@ above):
 - `src/lib/deidentify.ts` — pure, dependency-free, framework-agnostic function
   (`deidentifySoapNote`); safe to import client- or server-side. See "SOAP note import
   & de-identification" below.
+- `src/lib/excelExport.ts` — client-side-only (uses browser-only APIs; never import it
+  from a route handler). Powers "Export to Excel" in `CodesTable.tsx`. See "Exporting
+  suggested codes to a persistent Excel file" below.
+- `src/lib/fileSystemAccess.d.ts` — minimal ambient types for the File System Access
+  API (`showSaveFilePicker`, `FileSystemFileHandle.queryPermission`/
+  `requestPermission`) that TypeScript's bundled `dom.d.ts` doesn't include yet.
+  Scoped to exactly what `excelExport.ts` uses — extend it if that file starts using
+  more of the API, don't pull in a third-party types package for this.
 
 ## API routes: all three live, no stubs
 
@@ -383,6 +394,80 @@ Next.js to let Node resolve them straight from `node_modules` instead of bundlin
 If PDF import ever breaks with a "fake worker"/module-not-found error again after a
 dependency bump, check that entry first before assuming the library itself regressed.
 
+## Exporting suggested codes to a persistent Excel file
+
+"Export to Excel" (`CodesTable.tsx`'s only export action) appends one row per
+suggested code to a single, persistent local `.xlsx` file that accumulates across
+exports/sessions, so a coder handling many cases ends up with one running workbook
+rather than a new file per export — this was an explicit ask: the coder handles a lot
+of these files and needs a durable, growing record, not a one-off snapshot.
+
+**There used to be a separate "Export Summary" button** (copied the raw
+`{ summary, codes }` JSON to the clipboard) — it was removed once "Export to Excel"
+existed, since it covered the same underlying need (getting the coding work out of the
+app) with a more useful, durable output. If you find a reference to `handleExport`/a
+clipboard-JSON export anywhere, it's stale and should be removed, not reconnected;
+`navigator.clipboard` isn't used anywhere in this app anymore.
+
+**Case ID is required and deliberately not auto-generated, with no silent no-op on a
+missing one.** A text input next to the export button (`caseId` state in `page.tsx`,
+reset by "Reset" along with the rest of the case). The button isn't HTML-`disabled` for
+this case specifically — if it were, clicking it without a Case ID would do nothing
+with no feedback — instead it stays clickable, and clicking it with an empty Case ID
+shows an inline amber hint (`showCaseIdHint` state in `CodesTable.tsx`, positioned
+`absolute` under the input) reading "Enter a Case ID first," which disappears the
+moment the coder types something. It's still rendered as disabled-*looking* (muted
+gray) whenever the Case ID is empty, to signal at a glance that it's not ready, even
+though it remains clickable specifically so that hint can fire. The button *is*
+genuinely HTML-`disabled` for the other precondition — no codes at all to export —
+since there's nothing meaningful to explain there. This was a direct product
+decision: an auto-generated id (timestamp, random string) wouldn't mean
+anything to the coder when they're scanning the spreadsheet later, so the field exists
+specifically for the coder's own case/encounter number, typed by hand. Every appended
+row is tagged with this value plus an ISO export timestamp, so rows from different
+notes stay traceable in one sheet (columns: Case ID, Exported At, Code, Description,
+Type, Source, Modifier, Units).
+
+**Why this can only work in Chrome/Edge, and what that means in practice**: a web page
+cannot silently read/write an arbitrary file on the user's disk — the only browser
+mechanism for "pick a file once, then keep writing to that same file" is the File
+System Access API (`window.showSaveFilePicker`, `FileSystemFileHandle`), which Firefox
+and Safari don't implement at all. `isExcelExportSupported()` in `lib/excelExport.ts`
+checks for this and `handleExportExcel` in `page.tsx` shows a plain `toast.error(...)`
+explaining the browser requirement rather than failing silently or crashing. Don't try
+to work around this with a plain `<a download>` blob-download approach as a
+"universal" fallback — that creates a **new file every export** (defeating the one
+persistent file requirement) and was explicitly not what was asked for.
+
+**How the persistence actually works** (`lib/excelExport.ts`): the chosen
+`FileSystemFileHandle` is stored in IndexedDB (`ensureFileHandle`/`getStoredHandle`/
+`storeHandle`) so it survives page reloads — the coder doesn't need to re-pick the
+file on every visit, only when there's no stored handle yet or the browser's grant for
+it has lapsed (`queryPermission`/`requestPermission`). This is a browser security
+requirement, not a bug: browsers deliberately refuse to let a page silently reopen a
+previously-chosen file without this re-confirmation step, so an occasional native
+permission prompt on this flow is expected, not something to "fix" away. On each
+export, the existing file's current rows are read back (`readExistingRows`, via
+`XLSX.read`/`sheet_to_json`) — if the file is empty or unreadable (e.g. the coder
+pointed it at an unrelated file), it's treated as empty rather than failing the
+export — new rows are appended in memory, and the whole workbook is rewritten via
+`FileSystemWritableFileStream` (`createWritable`/`write`/`close`). There's no way to
+append to an `.xlsx` file as a binary format without parsing and rewriting the whole
+thing — this isn't a missed optimization.
+
+`FileSystemFileHandle`'s permission methods and `showSaveFilePicker` aren't in
+TypeScript's bundled `dom.d.ts` yet — see `lib/fileSystemAccess.d.ts` for the minimal
+ambient declarations this needed; extend that file rather than reaching for a
+third-party `@types` package if more of the API gets used later.
+
+**A real testing limitation worth knowing**: `showSaveFilePicker()` opens a native
+OS-level file dialog that browser automation cannot drive or dismiss (the same
+limitation noted for testing file import — see "SOAP note import & de-identification"
+above). Verify the UI (Case ID field, button enabled/disabled state) and the row-
+building/XLSX read-write logic in isolation (e.g. a standalone script exercising
+`XLSX.utils.aoa_to_sheet`/`XLSX.write`/`XLSX.read` directly) rather than trying to
+automate a real click through the native picker.
+
 ## Reference-only tool — accept/reject/modify workflow and accuracy tracking removed
 
 Earlier versions of this app had a full review workflow: each Suggested Code row had
@@ -395,9 +480,11 @@ what the AI (and optionally Optum) suggests, plus whatever the coder adds manual
 "Add missed code"; the coder acts on the codes outside this tool. This was an explicit
 product decision ("this platform is for reference only"), not an oversight — don't
 reintroduce status tracking, row actions, or an accuracy/precision-recall score without
-being asked again, even though it's a natural-looking feature to add back. The "Export
-Summary" button (still present, now in `CodesTable.tsx`'s header) survived the removal
-since it's a separate feature from accuracy tracking.
+being asked again, even though it's a natural-looking feature to add back. The export
+button in `CodesTable.tsx`'s header (originally "Export Summary," a JSON-to-clipboard
+copy; now "Export to Excel," see "Exporting suggested codes to a persistent Excel
+file" below) survived this removal since it's a separate feature from accuracy
+tracking.
 
 ## Codes are validated, not copied
 

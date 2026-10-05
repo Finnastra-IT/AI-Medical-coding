@@ -7,6 +7,7 @@ import SoapInput from "@/components/SoapInput";
 import SummaryPanel, { SummaryPanelSkeleton } from "@/components/SummaryPanel";
 import CodesTable from "@/components/CodesTable";
 import { analyzeNote, getErrorMessage } from "@/lib/api";
+import { appendCodesToExcelFile, isExcelExportSupported } from "@/lib/excelExport";
 import type { ClinicalSummary, CodeType, SuggestedCode } from "@/lib/types";
 
 let manualCodeCounter = 0;
@@ -43,6 +44,7 @@ export default function Home() {
   const [summary, setSummary] = useState<ClinicalSummary | null>(null);
   const [codes, setCodes] = useState<SuggestedCode[]>([]);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [caseId, setCaseId] = useState("");
 
   const currentStep = useMemo<1 | 2 | 3>(() => {
     if (codes.length > 0) return 3;
@@ -123,15 +125,24 @@ export default function Home() {
     setSoapNote("");
     setSummary(null);
     setCodes([]);
+    setCaseId("");
   }
 
-  async function handleExport() {
-    const payload = { summary, codes };
+  async function handleExportExcel() {
+    if (!isExcelExportSupported()) {
+      toast.error(
+        "Excel export needs Chrome or Edge — this browser doesn't support direct file access."
+      );
+      return;
+    }
     try {
-      await navigator.clipboard.writeText(JSON.stringify(payload, null, 2));
-      toast.success("Summary copied to clipboard");
-    } catch {
-      toast.error("Could not copy to clipboard");
+      await appendCodesToExcelFile(caseId.trim(), codes);
+      toast.success(
+        `Added ${codes.length} code${codes.length === 1 ? "" : "s"} to the Excel file`
+      );
+    } catch (err) {
+      if (err instanceof DOMException && err.name === "AbortError") return;
+      toast.error(getErrorMessage(err, "Could not export to Excel."));
     }
   }
 
@@ -147,7 +158,12 @@ export default function Home() {
               onChange={setSoapNote}
               onAnalyze={handleAnalyze}
               onReset={handleReset}
-              canReset={soapNote.trim().length > 0 || summary !== null || codes.length > 0}
+              canReset={
+                soapNote.trim().length > 0 ||
+                summary !== null ||
+                codes.length > 0 ||
+                caseId.trim().length > 0
+              }
               isAnalyzing={isAnalyzing}
             />
           </div>
@@ -169,9 +185,11 @@ export default function Home() {
           <CodesTable
             codes={codes}
             isLoading={false}
+            caseId={caseId}
+            onCaseIdChange={setCaseId}
             onAddManual={handleAddManual}
             onAddFromOptum={handleAddFromOptum}
-            onExport={handleExport}
+            onExportExcel={handleExportExcel}
           />
         )}
       </main>

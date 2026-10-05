@@ -8,6 +8,8 @@ import OptumLookup from "./OptumLookup";
 interface CodesTableProps {
   codes: SuggestedCode[];
   isLoading: boolean;
+  caseId: string;
+  onCaseIdChange: (value: string) => void;
   onAddManual: (
     code: string,
     description: string,
@@ -16,7 +18,7 @@ interface CodesTableProps {
     units?: number
   ) => void;
   onAddFromOptum: (code: string, description: string, type: CodeType) => void;
-  onExport: () => void;
+  onExportExcel: () => void;
 }
 
 // Modifier/units only apply to CPT/HCPCS/E-M codes, never ICD-10 — see
@@ -27,11 +29,16 @@ const hasModifierOrUnits = (codes: SuggestedCode[]) =>
 export default function CodesTable({
   codes,
   isLoading,
+  caseId,
+  onCaseIdChange,
   onAddManual,
   onAddFromOptum,
-  onExport,
+  onExportExcel,
 }: CodesTableProps) {
   const showModifierUnits = hasModifierOrUnits(codes);
+  const hasCaseId = caseId.trim().length > 0;
+  const hasCodes = codes.length > 0;
+  const [showCaseIdHint, setShowCaseIdHint] = useState(false);
 
   if (isLoading) {
     return <CodesTableSkeleton />;
@@ -39,17 +46,56 @@ export default function CodesTable({
 
   return (
     <section className="flex flex-col gap-4 rounded-xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
         <h2 className="text-sm font-semibold text-slate-900">
           Suggested Codes
         </h2>
-        <button
-          type="button"
-          onClick={onExport}
-          className="inline-flex items-center justify-center gap-2 rounded-lg border border-teal-600 px-3 py-1.5 text-xs font-medium text-teal-700 transition-colors hover:bg-teal-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-500 focus-visible:ring-offset-2"
-        >
-          Export Summary
-        </button>
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="relative">
+            <input
+              type="text"
+              value={caseId}
+              onChange={(event) => onCaseIdChange(event.target.value)}
+              placeholder="Case ID / Reference #"
+              aria-label="Case ID (used to identify this export in the Excel file)"
+              aria-describedby={
+                showCaseIdHint && !hasCaseId ? "export-excel-hint" : undefined
+              }
+              className="w-36 rounded-md border border-slate-200 bg-white px-2 py-1.5 text-xs focus:border-teal-500 focus:outline-none focus:ring-2 focus:ring-teal-500/30 sm:w-40"
+            />
+            {showCaseIdHint && !hasCaseId && (
+              <div
+                id="export-excel-hint"
+                role="alert"
+                className="absolute left-0 top-full z-10 mt-1.5 w-48 rounded-md border border-amber-200 bg-amber-50 px-2.5 py-1.5 text-xs text-amber-800 shadow-sm"
+              >
+                Enter a Case ID first — it&apos;s needed to label this export.
+              </div>
+            )}
+          </div>
+          <button
+            type="button"
+            onClick={() => {
+              if (!hasCaseId) {
+                setShowCaseIdHint(true);
+                return;
+              }
+              setShowCaseIdHint(false);
+              onExportExcel();
+            }}
+            disabled={!hasCodes}
+            className={[
+              "inline-flex items-center justify-center gap-2 rounded-lg px-3 py-1.5 text-xs font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-500 focus-visible:ring-offset-2",
+              !hasCodes
+                ? "cursor-not-allowed bg-slate-200 text-slate-400"
+                : hasCaseId
+                  ? "bg-teal-600 text-white hover:bg-teal-700"
+                  : "bg-slate-200 text-slate-500 hover:bg-slate-300",
+            ].join(" ")}
+          >
+            Export to Excel
+          </button>
+        </div>
       </div>
 
       <div className="hidden overflow-x-auto sm:block">
