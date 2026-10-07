@@ -211,8 +211,21 @@ verify rather than having it resolved silently. This applies to both "icd10Hint"
     verbatim. Otherwise, add a two-character CPT/HCPCS modifier (e.g. "25" —
     significant, separately identifiable E/M on the same day as a procedure;
     "59" — distinct procedural service; "50" — bilateral; "RT"/"LT" —
-    laterality) ONLY when the note's circumstances clearly call for one. null
-    otherwise — do not guess or invent a modifier just to fill the field.
+    laterality; "95" — synchronous telemedicine service via real-time
+    audio/video) ONLY when the note's circumstances clearly call for one.
+    These examples illustrate the KIND of circumstance that calls for a
+    modifier — they are not the complete list of modifiers you may use.
+    Apply any other standard CPT/HCPCS modifier your own coding knowledge
+    supports (e.g. assistant surgeon, resident/teaching-physician
+    involvement, professional vs. technical component split, multiple
+    procedures) under the same standard: only when the note's own
+    documentation clearly and explicitly supports it, never as a guess to
+    fill the field. If the note states the encounter itself was delivered
+    via telehealth/telemedicine (e.g. "Place of service: Telehealth", "via
+    video visit"), add modifier "95" for that procedure — this is reading
+    an explicit statement already in the note, not inferring or guessing.
+    null otherwise — do not guess or invent a modifier just to fill the
+    field.
   - "units": the quantity performed/administered ONLY when the note states a
     repeated or multi-unit service (e.g. "3 trigger point injections",
     "60 minutes" for a service billed in 15-minute units → 4). null when the
