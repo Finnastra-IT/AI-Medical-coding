@@ -47,3 +47,42 @@ export const optumSearchRequestSchema = z.object({
   term: z.string().trim().min(1, "term must not be empty"),
   codeType: z.enum(["cpt", "hcpcs", "icd10cm"]),
 });
+
+export const loginRequestSchema = z.object({
+  username: z.string().trim().min(1, "username must not be empty"),
+  password: z.string().min(1, "password must not be empty"),
+});
+
+const usernameSchema = z
+  .string()
+  .trim()
+  .min(3, "username must be at least 3 characters")
+  .max(50, "username must be at most 50 characters")
+  .regex(
+    /^[a-zA-Z0-9_.-]+$/,
+    "username may only contain letters, numbers, '.', '_', and '-'"
+  );
+
+const passwordSchema = z
+  .string()
+  .min(8, "password must be at least 8 characters");
+
+export const createUserRequestSchema = z.object({
+  username: usernameSchema,
+  password: passwordSchema,
+  role: z.enum(["admin", "user"]),
+});
+
+export const updateUserRequestSchema = z
+  .object({
+    role: z.enum(["admin", "user"]).optional(),
+    isActive: z.boolean().optional(),
+    password: passwordSchema.optional(),
+  })
+  .refine(
+    (data) =>
+      data.role !== undefined ||
+      data.isActive !== undefined ||
+      data.password !== undefined,
+    { message: "at least one of role, isActive, or password must be provided" }
+  );

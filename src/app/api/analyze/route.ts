@@ -1,11 +1,20 @@
 import { NextResponse } from "next/server";
 import { analyzeRequestSchema } from "@/lib/schemas";
 import { analyzeWithOpenAI, NotMedicalNoteError } from "@/lib/openai";
+import { getSessionUser } from "@/lib/auth";
 
 // Calls OpenAI (see lib/openai.ts) using OPENAI_API_KEY from process.env,
-// server-side only — never exposed to the client.
+// server-side only — never exposed to the client. Requires a valid session —
+// see AGENTS.md "Authentication & admin user management" for why every API
+// route re-checks this even though middleware.ts already does a lightweight
+// cookie-presence check.
 
 export async function POST(request: Request) {
+  const user = await getSessionUser();
+  if (!user) {
+    return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
+  }
+
   const body = await request.json().catch(() => null);
   const parsed = analyzeRequestSchema.safeParse(body);
 

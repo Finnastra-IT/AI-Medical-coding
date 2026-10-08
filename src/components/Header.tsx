@@ -1,10 +1,15 @@
+import Link from "next/link";
 import StepIndicator from "./StepIndicator";
+import LogoutButton from "./LogoutButton";
+import type { AppUser } from "@/lib/types";
 
 interface HeaderProps {
-  currentStep: 1 | 2 | 3;
+  /** Omitted on pages with no multi-step flow (e.g. the admin panel). */
+  currentStep?: 1 | 2 | 3;
+  user: AppUser;
 }
 
-export default function Header({ currentStep }: HeaderProps) {
+export default function Header({ currentStep, user }: HeaderProps) {
   return (
     <header className="sticky top-0 z-30 border-b border-slate-200 bg-white/95 backdrop-blur supports-[backdrop-filter]:bg-white/80">
       <div className="mx-auto flex max-w-7xl flex-col gap-3 px-4 py-3 sm:flex-row sm:items-center sm:justify-between sm:px-6">
@@ -22,7 +27,33 @@ export default function Header({ currentStep }: HeaderProps) {
             </p>
           </div>
         </div>
-        <StepIndicator currentStep={currentStep} />
+
+        <div className="flex items-center gap-4">
+          {currentStep && <StepIndicator currentStep={currentStep} />}
+
+          <div className="flex items-center gap-3 border-slate-200 sm:border-l sm:pl-4">
+            {user.role === "admin" && (
+              <nav className="flex items-center gap-3">
+                <Link
+                  href="/"
+                  className="text-xs font-medium text-slate-500 transition-colors hover:text-teal-700"
+                >
+                  App
+                </Link>
+                <Link
+                  href="/admin"
+                  className="text-xs font-medium text-slate-500 transition-colors hover:text-teal-700"
+                >
+                  Admin
+                </Link>
+              </nav>
+            )}
+            <span className="hidden text-xs text-slate-400 sm:inline">
+              {user.username}
+            </span>
+            <LogoutButton />
+          </div>
+        </div>
       </div>
     </header>
   );

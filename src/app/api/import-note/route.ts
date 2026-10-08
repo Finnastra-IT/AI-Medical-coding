@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import mammoth from "mammoth";
 import { PDFParse } from "pdf-parse";
+import { getSessionUser } from "@/lib/auth";
 
 // Extracts plain text from an uploaded .docx or .pdf file so it can be
 // loaded into the SOAP note textarea. .txt files never hit this route —
@@ -9,10 +10,17 @@ import { PDFParse } from "pdf-parse";
 // This is a plain multipart file upload, not a JSON body, so it doesn't go
 // through lib/schemas.ts like the other routes — see AGENTS.md "SOAP note
 // de-identification" for why that's fine here (no secrets, no AI call,
-// just local text extraction on our own server).
+// just local text extraction on our own server). Still requires a valid
+// session, same as every other route — see "Authentication & admin user
+// management" there.
 const MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024; // generous for a text-based note
 
 export async function POST(request: Request) {
+  const user = await getSessionUser();
+  if (!user) {
+    return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
+  }
+
   const formData = await request.formData().catch(() => null);
   const file = formData?.get("file");
 

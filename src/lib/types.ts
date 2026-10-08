@@ -85,3 +85,34 @@ export interface OptumSearchRequest {
   term: string;
   codeType: OptumCodeType;
 }
+
+export type UserRole = "admin" | "user";
+
+// The authenticated user shape exposed to the client (e.g. via the session
+// endpoint and the admin user-management table) — never includes
+// `passwordHash`, which only ever exists in `lib/auth.ts`/the database row.
+export interface AppUser {
+  id: string;
+  username: string;
+  role: UserRole;
+  isActive: boolean;
+  createdAt: string;
+}
+
+export interface LoginRequest {
+  username: string;
+  password: string;
+}
+
+export interface CreateUserRequest {
+  username: string;
+  password: string;
+  role: UserRole;
+}
+
+export interface UpdateUserRequest {
+  role?: UserRole;
+  isActive?: boolean;
+  /** Only present when the admin is resetting this user's password. */
+  password?: string;
+}

@@ -1,16 +1,58 @@
 import axios from "axios";
 import type {
   AnalyzeRequest,
+  AppUser,
   ClinicalSummary,
+  CreateUserRequest,
+  LoginRequest,
   OptumCodeType,
   OptumSearchNode,
   OptumSearchRequest,
+  UpdateUserRequest,
 } from "./types";
 
 export async function analyzeNote(soapNote: string): Promise<ClinicalSummary> {
   const payload: AnalyzeRequest = { soapNote };
   const { data } = await axios.post<ClinicalSummary>("/api/analyze", payload);
   return data;
+}
+
+export async function login(username: string, password: string): Promise<AppUser> {
+  const payload: LoginRequest = { username, password };
+  const { data } = await axios.post<{ user: AppUser }>("/api/auth/login", payload);
+  return data.user;
+}
+
+export async function logout(): Promise<void> {
+  await axios.post("/api/auth/logout");
+}
+
+export async function listUsers(): Promise<AppUser[]> {
+  const { data } = await axios.get<{ users: AppUser[] }>("/api/admin/users");
+  return data.users;
+}
+
+export async function createUser(request: CreateUserRequest): Promise<AppUser> {
+  const { data } = await axios.post<{ user: AppUser }>(
+    "/api/admin/users",
+    request
+  );
+  return data.user;
+}
+
+export async function updateUser(
+  id: string,
+  request: UpdateUserRequest
+): Promise<AppUser> {
+  const { data } = await axios.patch<{ user: AppUser }>(
+    `/api/admin/users/${id}`,
+    request
+  );
+  return data.user;
+}
+
+export async function deleteUser(id: string): Promise<void> {
+  await axios.delete(`/api/admin/users/${id}`);
 }
 
 export async function searchOptumCodes(

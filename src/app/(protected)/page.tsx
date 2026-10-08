@@ -8,6 +8,7 @@ import SummaryPanel, { SummaryPanelSkeleton } from "@/components/SummaryPanel";
 import CodesTable from "@/components/CodesTable";
 import { analyzeNote, getErrorMessage } from "@/lib/api";
 import { appendCodesToExcelFile, isExcelExportSupported } from "@/lib/excelExport";
+import { useCurrentUser } from "@/lib/userContext";
 import type { ClinicalSummary, CodeType, SuggestedCode } from "@/lib/types";
 
 let manualCodeCounter = 0;
@@ -40,6 +41,7 @@ function codesFromSummary(summary: ClinicalSummary): SuggestedCode[] {
 }
 
 export default function Home() {
+  const user = useCurrentUser();
   const [soapNote, setSoapNote] = useState("");
   const [summary, setSummary] = useState<ClinicalSummary | null>(null);
   const [codes, setCodes] = useState<SuggestedCode[]>([]);
@@ -148,7 +150,7 @@ export default function Home() {
 
   return (
     <div className="flex min-h-screen flex-col bg-slate-50">
-      <Header currentStep={currentStep} />
+      <Header currentStep={currentStep} user={user} />
 
       <main className="mx-auto flex w-full max-w-7xl flex-1 flex-col gap-6 px-4 py-6 sm:px-6">
         <div className="flex flex-col gap-6 lg:flex-row">

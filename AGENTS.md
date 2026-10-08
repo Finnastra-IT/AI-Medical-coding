@@ -43,6 +43,14 @@ Analyze is meaningful to click — see "SOAP note import & de-identification" be
 is a real, live feature, and it's separate from — and stricter than — the older soft PHI
 guard described under "PHI / name handling" below.
 
+**The whole app is gated behind a login** — nothing here is reachable anonymously
+anymore, not even a read-only glance. A coder signs in at `/login`; an admin creates and
+manages who's allowed to sign in at all via `/admin`. See "Authentication & admin user
+management" below for the full picture (session design, the two-layer security model,
+the `users`/`sessions` schema, bootstrapping the first admin). This replaced what used
+to be a fully open app with zero auth — if you find old context (docs, comments, your
+own assumptions) describing this as an open tool, it's stale.
+
 There are **two separate, unrelated Optum-related things** — don't conflate them (a
 third, the bulk "Get Codes via Optum" button, existed earlier and was removed — see
 above):
@@ -73,12 +81,18 @@ above):
 
 ## Directory layout
 
-- `src/app/` — routes, `layout.tsx`, `globals.css`. `page.tsx` is the single client-side
-  workspace and owns all top-level state (soap note, summary, codes, loading/error
-  flags). Components stay controlled/presentational and receive handlers as props —
-  don't reach for global state or context unless a second page needs to share it.
+- `src/app/(protected)/` — a route group (the parens don't affect the URL) wrapping
+  every page that requires a logged-in user: `(protected)/layout.tsx` (the real,
+  server-side auth gate — see "Authentication & admin user management" below),
+  `(protected)/page.tsx` (the main coder workspace, moved here from `src/app/page.tsx`
+  via `git mv` when auth was added — same component, same top-level state, just a new
+  location), and `(protected)/admin/page.tsx` (the admin panel). `src/app/login/page.tsx`
+  deliberately sits *outside* this group, since it's the one page that must render
+  without a session.
 - `src/app/api/*/route.ts` — Next.js Route Handlers. Each validates its body with a Zod
-  schema from `lib/schemas.ts` and returns `NextResponse.json(...)`.
+  schema from `lib/schemas.ts` and returns `NextResponse.json(...)`. Every route except
+  `/api/auth/login` requires a valid session (`getSessionUser()`/`requireAdminUser()`
+  from `lib/auth.ts`) — see "Authentication & admin user management" below.
 - `src/components/` — one component per file, small and focused. A component with a
   loading state exports its skeleton as a named export alongside the default export
   (e.g. `SummaryPanelSkeleton`, `CodesTableSkeleton`) rather than a separate file.
@@ -105,6 +119,25 @@ above):
   `requestPermission`) that TypeScript's bundled `dom.d.ts` doesn't include yet.
   Scoped to exactly what `excelExport.ts` uses — extend it if that file starts using
   more of the API, don't pull in a third-party types package for this.
+- `src/lib/db.ts` — the one place that opens a Postgres connection (a pooled `pg.Pool`,
+  server-only). `lib/auth.ts` is its only consumer. See "Authentication & admin user
+  management" below.
+- `src/lib/auth.ts` — server-only auth core: password hashing/verification, session
+  token generation/validation, `getSessionUser()`/`requireAdminUser()`. See
+  "Authentication & admin user management" below.
+- `src/lib/userContext.tsx` — a thin React Context (`UserProvider`/`useCurrentUser`)
+  that hands the session user resolved in `(protected)/layout.tsx` (a Server Component)
+  down to `(protected)/page.tsx` (a Client Component), which needs it to pass into
+  `<Header>` alongside its own client-side `currentStep` state. Context was the right
+  tool here specifically because a Server Component layout can't receive props back
+  from a Client Component rendered below it — don't reach for this pattern anywhere
+  else unless a second page genuinely needs the same cross-boundary value.
+- `src/proxy.ts` — Edge-runtime request gate (Next.js 16's `middleware.ts` replacement —
+  see "Authentication & admin user management" below for why it was renamed and what it
+  actually checks vs. doesn't).
+- `scripts/setup-auth-db.mjs` — one-time idempotent script (`pnpm run db:setup-auth`)
+  that creates the `users`/`sessions` tables and seeds the first admin account. See
+  "Authentication & admin user management" below.
 
 ## API routes: all three live, no stubs
 
@@ -141,12 +174,104 @@ reconnected. `lib/optum.ts`'s auth/token-fetch logic is untouched by this remova
 still very much in use by `searchOptumCodes`, which backs both live per-field/standalone
 Optum features below.
 
+**Auth routes, also live, no stubs** — see "Authentication & admin user management"
+below for the full design:
+- `POST /api/auth/login` → validates via `loginRequestSchema`, verifies the
+  username/password against the `users` table, creates a session. Returns a generic
+  401 "Invalid username or password" for a wrong username, wrong password, *or* a
+  deactivated account — deliberately indistinguishable, to prevent enumeration.
+- `POST /api/auth/logout` → destroys the current session.
+- `GET /api/admin/users` / `POST /api/admin/users` → list all users / create a user.
+  Admin-only (`requireAdminUser()`).
+- `PATCH /api/admin/users/[id]` / `DELETE /api/admin/users/[id]` → update
+  role/active-status/reset password, or delete a user. Admin-only; both block an admin
+  from acting on their *own* account (deactivate/demote/delete) to prevent a
+  self-inflicted lockout.
+
 Keep the Zod validation at the top of each handler, and update `.env.example` (with a
 blank placeholder — never a real value) if you add new env vars.
 
 **Secret hygiene**: `.env.example` is tracked in git (see the `!.env.example` line in
 `.gitignore`) — it must only ever contain blank placeholders. Real values, including
 ones a user pastes into chat, go in `.env.local` (gitignored) instead.
+
+## Authentication & admin user management
+
+The app gates **everything** behind a login — no anonymous usage anywhere, including
+the API routes. This is a **custom username/password system backed by a `users` table
+in the project's own Postgres database** (reached via `DATABASE_CONNECTION_STRING`,
+already in `.env.local`) — deliberately **not** Supabase's managed Auth product, even
+though the database happens to be hosted on Supabase. That was an explicit choice: the
+app needed admin-driven account creation with a username/password (not email-centric
+self-signup), and standing up Supabase Auth for that would have added a second identity
+system to reason about for no real benefit over a plain table this app already fully
+owns. `SUPABASE_SECRET_KEY`/`PROJECT_URL`/`PUBLISHABLE_KEY` exist in `.env.local` from
+before this decision was finalized but **are unused by the current implementation** —
+don't assume they're load-bearing, and don't wire up `@supabase/supabase-js` auth calls
+expecting them to already be configured for that purpose.
+
+**Schema** (created by `scripts/setup-auth-db.mjs`, see below):
+- `users`: `id` (UUID, generated in JS via `crypto.randomUUID()` at insert time — not a
+  DB-side default, specifically so nothing here depends on a Postgres extension like
+  `pgcrypto`), `username` (unique), `password_hash`, `role` (`'admin' | 'user'`),
+  `is_active` (boolean), `created_at`.
+- `sessions`: `id`, `user_id` (FK), `token_hash`, `expires_at`, `created_at`. Indexed on
+  `user_id` and `expires_at`.
+
+**Password storage**: `bcryptjs` (12 rounds) via `hashPassword`/`verifyPassword` in
+`lib/auth.ts` — the pure-JS `bcryptjs` was chosen over native `bcrypt` specifically to
+avoid native-binding compilation issues under Turbopack; don't swap it for `bcrypt`
+without checking that still isn't a problem.
+
+**Session design**: on login, `createSession(userId)` generates an opaque 32-byte random
+token (`crypto.randomBytes(32).toString("hex")`), sets it as an httpOnly cookie
+(`medicode_session`; `secure` in production, `sameSite: "lax"`, 7-day expiry), and
+stores only a **SHA-256 hash of the token** in `sessions.token_hash` — never the raw
+token. This mirrors password hashing's own rationale: a leaked `sessions` row alone
+can't be replayed as a working session cookie. `destroySession()` deletes the row and
+clears the cookie on logout.
+
+**Two-layer security model — don't mistake the first layer for the real one**:
+1. `src/proxy.ts` (Edge runtime, Next.js 16's renamed `middleware.ts` — see below) only
+   checks whether the `medicode_session` cookie is *present*. That's all it can do: Edge
+   middleware can't open a raw TCP connection to Postgres, so it can't actually validate
+   anything. Its only job is to bounce an obviously logged-out visitor to `/login` (or
+   return a `401` for an API route) before a protected page even starts rendering.
+2. The *real* check is `getSessionUser()` (`lib/auth.ts`, Node runtime), which joins
+   `sessions` → `users` and requires the session to exist, be unexpired
+   (`expires_at > now()`), **and** the user to still be `is_active`. This runs in
+   `(protected)/layout.tsx` (redirects to `/login` if null) and again at the top of
+   every API route handler (`getSessionUser()`/`requireAdminUser()`, returning a `401`
+   JSON error if null). This is also why deactivating a user takes effect immediately on
+   their *very next request* — not just their next login attempt — since every request
+   re-checks `is_active`, not just session validity.
+
+If you ever touch auth, keep both layers: removing the Node-side check because "the
+proxy already handles it" would silently remove the only check that's actually
+authoritative.
+
+**`middleware.ts` → `proxy.ts`**: Next.js 16 deprecated the `middleware.ts` file
+convention in favor of `proxy.ts` (identical semantics, just the file and the exported
+function renamed from `middleware` to `proxy`). This repo already uses the new
+convention — if you ever see stack-overflow-era docs or a dependency referencing
+`middleware.ts`, that's the old name; don't reintroduce it.
+
+**Bootstrapping the first admin**: since only an admin can create a user, and there's no
+self-signup, `pnpm run db:setup-auth` (`scripts/setup-auth-db.mjs`) is a standalone,
+idempotent script — not run through Next.js, so it parses `.env.local` itself — that
+creates the `users`/`sessions` tables if they don't exist and seeds exactly one admin
+account (username `admin`, a random 16-character password) *only if no admin exists
+yet*. Re-running it is a safe no-op once an admin exists. This was run once already;
+there's no need to run it again unless the `users` table is ever wiped.
+
+**Self-protection guards**: an admin can't deactivate, demote, or delete their *own*
+account via `/api/admin/users/[id]` (checked via `id === admin.id` in both `PATCH` and
+`DELETE`) — prevents an admin accidentally locking out the only admin account.
+
+**Why the generic login error**: `/api/auth/login` returns the exact same 401 "Invalid
+username or password" whether the username doesn't exist, the password is wrong, or the
+account is deactivated. This is deliberate — distinguishing any of those cases in the
+response would let an attacker enumerate valid usernames or detect deactivated accounts.
 
 ## PHI / name handling on `/api/analyze` — tried, reverted, revisit with care
 
@@ -650,6 +775,52 @@ confirms/updates the diagnosis statement, so the coder can decide whether to que
 Verified 3/3 runs: `G58.8` stayed stable and the mismatch was flagged every time, with
 wording varying (e.g. "...while the procedure identifies the right infrapatellar
 saphenous nerve...") but the substance consistent.
+
+## Modifiers: the examples list is scoped to what's been seen, not exhaustive — telehealth was a gap
+
+A real behavioral-health/psychotherapy note exposed a gap in the `modifier` bullet of
+`SYSTEM_INSTRUCTION`: the note stated outright, in its own header, `"Place of service:
+Telehealth"` — about as unambiguous a signal as a note can give — but the model never
+attached modifier `95` (synchronous telemedicine service) to the psychotherapy
+procedure line. Comparing against a general-purpose ChatGPT run on the same note (which
+did pick up `95` from that exact line) surfaced the cause: the `modifier` bullet's
+examples (`"25"`, `"59"`, `"50"`, `"RT"/"LT"`) were all drawn from surgical/procedural
+scenarios — the same set of real notes that drove every other targeted fix in this
+file (see "A targeted fix, not a generic one" and "Implanted device supply codes"
+above) — and telehealth-delivered encounters were never part of that set. This wasn't
+the model declining to guess on weak evidence (contrast with the CPT-code gap on the
+same note, where the only timing cue was a *future* treatment-plan ceiling, not this
+encounter's actual duration — correctly left blank); the note's telehealth statement
+was as explicit as a modifier source gets, but the instruction never told the model
+telehealth was a category to look for at all.
+
+Fixed by adding `"95"` to the `modifier` bullet's example list and a dedicated clause:
+when the note states the encounter itself was delivered via telehealth/telemedicine
+(e.g. `"Place of service: Telehealth"`, "via video visit"), add modifier `95` — framed
+explicitly as reading a statement already in the note, not inferring one, to keep it
+consistent with the bullet's existing "don't guess or invent a modifier" rule.
+
+**Follow-up — the root cause was the anchoring mechanism itself, not just a missing
+`95` example.** Flagged when asked "if any other modifiers are there, shouldn't those
+also get picked up?": the bullet's wording was already technically general ("add a
+modifier... ONLY when the note's circumstances clearly call for one"), but the model
+tracks the concrete examples it's shown far more reliably than it generalizes from the
+abstract clause sitting next to them — so any modifier category with no worked example
+(assistant surgeon, resident/teaching-physician involvement, professional/technical
+component split, etc.) was likely suffering the exact same blind spot `95` did, for the
+same reason, even though nothing in the instruction technically forbade it. Rather than
+chasing every individual modifier one real-note failure at a time (the usual pattern in
+this file), the bullet now says outright that the listed examples illustrate the *kind*
+of circumstance that calls for a modifier and are not the complete list, and tells the
+model to apply any other standard modifier its own coding knowledge supports under the
+same "only when the note clearly and explicitly supports it" standard. This is a
+narrow exception to this file's usual "don't generalize preemptively" principle (see "A
+targeted fix, not a generic one" above) — justified here because the fix addresses the
+*mechanism* that caused the observed `95` failure (example-anchoring), not because
+we've confirmed every other modifier category independently; it doesn't assert any
+specific new modifier is needed, it just removes the unintended "only these five exist"
+reading that caused this one to be missed. Still verify any newly-surfaced modifier
+against a real note before trusting it, the same as everything else in this file.
 
 ## Per-field Optum code search — real integration, live
 
