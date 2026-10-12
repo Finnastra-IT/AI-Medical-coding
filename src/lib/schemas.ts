@@ -23,6 +23,7 @@ const procedureSchema = z.object({
   codeType: z.enum(["CPT", "HCPCS", "E/M"]).optional(),
   modifier: z.string().optional(),
   units: z.number().optional(),
+  linkedDiagnosisIds: z.array(z.string()),
 });
 
 const negationSchema = z.object({
@@ -66,6 +67,11 @@ const usernameSchema = z
 const passwordSchema = z
   .string()
   .min(8, "password must be at least 8 characters");
+
+export const changePasswordRequestSchema = z.object({
+  currentPassword: z.string().min(1, "currentPassword must not be empty"),
+  newPassword: passwordSchema,
+});
 
 export const createUserRequestSchema = z.object({
   username: usernameSchema,

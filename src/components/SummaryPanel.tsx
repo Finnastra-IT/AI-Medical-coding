@@ -18,6 +18,15 @@ interface OptumCodeSelection {
   type: CodeType;
 }
 
+// A diagnosis's CMS-1500 Box 21 letter (A-L), precomputed once from
+// `summary.diagnoses`'s order and handed to each `ProcedureEditor` so it can
+// render its own `linkedDiagnosisIds` as letters without recomputing them.
+interface DiagnosisPointer {
+  id: string;
+  letter: string;
+  condition: string;
+}
+
 interface SummaryPanelProps {
   summary: ClinicalSummary | null;
   onChange: (summary: ClinicalSummary) => void;
@@ -32,8 +41,28 @@ export default function SummaryPanel({
   const [negationsOpen, setNegationsOpen] = useState(false);
   const [clarificationsOpen, setClarificationsOpen] = useState(true);
 
+  // CMS-1500 Box 21 only has room for 12 diagnoses, lettered A-L — diagnoses
+  // beyond that have no letter to point to, so they're left out of the
+  // pointer hint (a separate AI-side clarification already flags when this
+  // cap is exceeded).
+  const diagnosisPointers: DiagnosisPointer[] =
+    summary?.diagnoses.slice(0, 12).map((diagnosis, index) => ({
+      id: diagnosis.id,
+      letter: String.fromCharCode(65 + index),
+      condition: diagnosis.condition,
+    })) ?? [];
+
+  const clarificationsCount = summary?.clarificationsNeeded.length ?? 0;
+
   return (
-    <section className="flex flex-1 flex-col gap-4 rounded-xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
+    <section
+      className={[
+        "flex flex-1 flex-col gap-4 rounded-xl border bg-white p-4 shadow-sm sm:p-5",
+        clarificationsCount > 0
+          ? "border-amber-200 border-l-4 border-l-amber-400"
+          : "border-slate-200",
+      ].join(" ")}
+    >
       <div className="flex items-center justify-between">
         <h2 className="text-sm font-semibold text-slate-900">
           Clinical Summary
@@ -45,6 +74,19 @@ export default function SummaryPanel({
           title="Paste a SOAP note to begin"
           description="Analyze a note to see a structured clinical summary here."
         />
+      )}
+
+      {clarificationsCount > 0 && (
+        <a
+          href="#clarifications-section"
+          className="flex items-center justify-between gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm font-medium text-amber-800 transition-colors hover:bg-amber-100 focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-500"
+        >
+          <span>
+            {clarificationsCount} item{clarificationsCount === 1 ? "" : "s"}{" "}
+            need{clarificationsCount === 1 ? "s" : ""} your review
+          </span>
+          <span aria-hidden="true">&darr;</span>
+        </a>
       )}
 
       {summary && (
@@ -105,6 +147,7 @@ export default function SummaryPanel({
                 <ProcedureEditor
                   key={procedure.id}
                   procedure={procedure}
+                  diagnosisPointers={diagnosisPointers}
                   onChange={(updated) => {
                     const procedures = [...summary.procedures];
                     procedures[index] = updated;
@@ -169,6 +212,7 @@ export default function SummaryPanel({
           </FieldGroup>
 
           <FieldGroup
+            id="clarifications-section"
             label={`Needs Clarification${summary.clarificationsNeeded.length > 0 ? ` (${summary.clarificationsNeeded.length})` : ""}`}
             action={
               summary.clarificationsNeeded.length > 0 && (
@@ -240,13 +284,15 @@ function FieldGroup({
   label,
   action,
   children,
+  id,
 }: {
   label: string;
   action?: ReactNode;
   children: ReactNode;
+  id?: string;
 }) {
   return (
-    <div className="flex flex-col gap-2">
+    <div id={id} className="flex scroll-mt-28 flex-col gap-2">
       <div className="flex items-center justify-between">
         <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-400">
           {label}
@@ -369,15 +415,20 @@ const CODE_TYPE_LABEL: Record<NonNullable<Procedure["codeType"]>, string> = {
 
 function ProcedureEditor({
   procedure,
+  diagnosisPointers,
   onChange,
   onOptumSelect,
 }: {
   procedure: Procedure;
+  diagnosisPointers: DiagnosisPointer[];
   onChange: (procedure: Procedure) => void;
   onOptumSelect: (code: string, codeType: OptumCodeType) => void;
 }) {
   const hasModifier = procedure.modifier !== undefined;
   const hasUnits = procedure.units !== undefined;
+  const linkedPointers = diagnosisPointers.filter((pointer) =>
+    procedure.linkedDiagnosisIds.includes(pointer.id)
+  );
 
   return (
     <div className="flex flex-col gap-2 rounded-lg border border-slate-200 bg-slate-50/60 p-3">
@@ -428,6 +479,23 @@ function ProcedureEditor({
           </div>
         )}
       </div>
+      {linkedPointers.length > 0 && (
+        <div className="flex flex-wrap items-center gap-1.5 border-t border-slate-200 pt-2">
+          <span className="text-xs text-slate-500">Diagnosis Pointer:</span>
+          {linkedPointers.map((pointer) => (
+            <span
+              key={pointer.id}
+              title={pointer.condition}
+              className="inline-flex items-center gap-1 rounded-full bg-teal-50 px-2 py-0.5 text-xs font-medium text-teal-700"
+            >
+              <span className="font-semibold">{pointer.letter}</span>
+              <span className="max-w-[10rem] truncate text-teal-600">
+                {pointer.condition}
+              </span>
+            </span>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

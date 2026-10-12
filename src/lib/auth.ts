@@ -63,6 +63,16 @@ export async function findUserByUsername(
   return result.rows[0] ?? null;
 }
 
+// Same internal-only contract as findUserByUsername (includes
+// `password_hash`) — used by the self-service change-password route, which
+// only has the session's user id, not their username, to look up from.
+export async function findUserById(id: string): Promise<UserRow | null> {
+  const result = await query<UserRow>("select * from users where id = $1", [
+    id,
+  ]);
+  return result.rows[0] ?? null;
+}
+
 // Creates a session row and sets the httpOnly cookie on the current
 // response. Route Handler / Server Action context only (`cookies()` can't
 // set cookies from a plain Server Component render).

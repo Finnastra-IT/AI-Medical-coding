@@ -1,5 +1,12 @@
 import { NextResponse } from "next/server";
 import mammoth from "mammoth";
+// Must be imported before "pdf-parse" itself on serverless platforms
+// (Vercel/Lambda/etc.) — pdf-parse's own troubleshooting guide for this
+// exact setup says this registers the worker before PDFParse needs it;
+// omitting it is part of what caused the DOMMatrix/"@napi-rs/canvas"
+// failure in production. See next.config.ts's serverExternalPackages
+// comment for the other half of this fix.
+import "pdf-parse/worker";
 import { PDFParse } from "pdf-parse";
 import { getSessionUser } from "@/lib/auth";
 

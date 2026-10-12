@@ -2,6 +2,7 @@ import axios from "axios";
 import type {
   AnalyzeRequest,
   AppUser,
+  ChangePasswordRequest,
   ClinicalSummary,
   CreateUserRequest,
   LoginRequest,
@@ -25,6 +26,14 @@ export async function login(username: string, password: string): Promise<AppUser
 
 export async function logout(): Promise<void> {
   await axios.post("/api/auth/logout");
+}
+
+export async function changePassword(
+  currentPassword: string,
+  newPassword: string
+): Promise<void> {
+  const payload: ChangePasswordRequest = { currentPassword, newPassword };
+  await axios.post("/api/auth/change-password", payload);
 }
 
 export async function listUsers(): Promise<AppUser[]> {

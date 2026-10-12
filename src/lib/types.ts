@@ -28,6 +28,14 @@ export interface Procedure {
   modifier?: string;
   /** Quantity billed. Absent/1 means "not worth showing", not "zero". */
   units?: number;
+  /**
+   * `Diagnosis.id`s this procedure is medically justified by — a coder-facing
+   * hint for CMS-1500 Box 24E's diagnosis pointer, not authoritative claim
+   * data. Empty when the AI can't confidently tie this procedure to a
+   * specific diagnosis; always empty for a manually-added procedure, since
+   * there's no note text to derive a link from.
+   */
+  linkedDiagnosisIds: string[];
 }
 
 export interface Negation {
@@ -58,6 +66,15 @@ export interface SuggestedCode {
   modifier?: string;
   /** Quantity billed. Absent/1 means "not worth showing", not "zero". */
   units?: number;
+  /**
+   * For a procedure row: the `Diagnosis.id`s (from `Procedure.linkedDiagnosisIds`)
+   * it's medically justified by — a coder-facing hint for CMS-1500 Box 24E,
+   * resolved to letters by `CodesTable.tsx` against whichever diagnosis rows
+   * are actually present in this table. Only ever set on an AI-sourced
+   * procedure row; undefined for diagnosis rows and all Manual/Optum rows,
+   * which have no note text to derive a link from.
+   */
+  linkedDiagnosisIds?: string[];
 }
 
 export interface AnalyzeRequest {
@@ -102,6 +119,14 @@ export interface AppUser {
 export interface LoginRequest {
   username: string;
   password: string;
+}
+
+// Self-service password change — distinct from `UpdateUserRequest.password`,
+// which is an admin resetting someone else's password and never requires
+// knowing the old one.
+export interface ChangePasswordRequest {
+  currentPassword: string;
+  newPassword: string;
 }
 
 export interface CreateUserRequest {

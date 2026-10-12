@@ -181,6 +181,10 @@ below for the full design:
   401 "Invalid username or password" for a wrong username, wrong password, *or* a
   deactivated account — deliberately indistinguishable, to prevent enumeration.
 - `POST /api/auth/logout` → destroys the current session.
+- `POST /api/auth/change-password` → self-service password change for the
+  logged-in user's own account (requires their current password). See
+  "Authentication & admin user management" below for why this exists
+  alongside, not instead of, the admin password-reset action.
 - `GET /api/admin/users` / `POST /api/admin/users` → list all users / create a user.
   Admin-only (`requireAdminUser()`).
 - `PATCH /api/admin/users/[id]` / `DELETE /api/admin/users/[id]` → update
@@ -272,6 +276,60 @@ account via `/api/admin/users/[id]` (checked via `id === admin.id` in both `PATC
 username or password" whether the username doesn't exist, the password is wrong, or the
 account is deactivated. This is deliberate — distinguishing any of those cases in the
 response would let an attacker enumerate valid usernames or detect deactivated accounts.
+
+**Self-service password change, alongside — not instead of — admin reset.**
+`POST /api/auth/change-password` (`changePasswordRequestSchema` in `lib/schemas.ts`)
+lets any logged-in user change their own password: requires their *current* password
+(verified via `verifyPassword`/`findUserById` — a new internal-only lookup in
+`lib/auth.ts`, mirroring `findUserByUsername`'s existing "includes `password_hash`,
+never return the row to the client" pattern), then hashes and stores the new one. The
+UI lives inside `SettingsModal.tsx` — a self-contained gear-icon trigger + `Modal.tsx`
+dialog (the same self-contained-trigger pattern as `OptumLookup.tsx`), dropped into
+`Header.tsx` for every logged-in user regardless of role (takes `user: AppUser` as its
+only prop), so it shows on both the main app and the admin panel.
+
+**The gear icon opens a Settings destination, not a single action directly** — an
+earlier version wired the gear straight to a change-password form, which was a
+semantic mismatch (a gear conventionally means "there's a menu here," not "click to
+trigger this one specific thing"). `SettingsModal` instead renders two internal views
+via its own `view` state (`"menu" | "change-password"`), both inside the *same* `Modal`
+— swapping `Modal`'s `title` between "Settings" and "Change Password" rather than
+stacking a second modal on top (nested modals are generally worth avoiding: messier
+focus/Escape/backdrop-click handling across two layers). The menu view shows a
+read-only account info block (username, role, member-since — all already on `AppUser`,
+not new data) plus a "Change Password →" row; clicking it swaps to the password form,
+which has its own "← Back to Settings" link back to the menu. Closing the modal
+(Escape, backdrop click, the "×") always resets back to the menu view for next time,
+regardless of which view was showing. This is deliberately NOT a general "settings
+framework" (no item registry, no routing, no extensibility scaffolding) — it's a plain
+two-view component sized to what's actually needed today; add a real second settings
+item before generalizing the structure further, don't build for a hypothetical one.
+
+This was added specifically *alongside* the existing admin "Reset password" action in
+`/api/admin/users/[id]` (see `ResetPasswordModal` in `AdminUsersPanel.tsx`) — **the
+admin capability was deliberately kept, not removed, when self-service shipped.**
+Self-service covers routine password hygiene; admin reset remains the only account-
+recovery path for a user who's forgotten their password and can't satisfy
+`currentPassword` in the self-service flow. There's no email/SMTP infrastructure
+anywhere in this app for a "forgot password" self-recovery flow, so removing admin
+reset would mean a forgotten password = permanent lockout except by deleting and
+re-creating the account — a materially worse outcome than keeping a capability that's
+also completely standard practice elsewhere (AWS IAM, Google Workspace, Okta, etc. all
+keep this exact admin/self-service split). If a self-service "forgot password" flow is
+ever built, revisit this — but don't remove admin reset as a side effect of adding
+self-service without that replacement actually existing.
+
+A few deliberate differences from the login route's error handling, both already
+covered above but easy to miss on a skim: unlike login's generic "Invalid username or
+password," a wrong `currentPassword` here returns a specific "Current password is
+incorrect" — safe to be specific because the request is already authenticated as this
+exact user, so there's no username-enumeration risk to guard against the way there is
+pre-login. And changing the password does NOT invalidate the current session or any
+other active session for that user (no session-table changes at all) — the user stays
+logged in through the change, and any other device they're logged in on keeps working
+too; building "log out everywhere else on password change" would be a reasonable
+security hardening later, but nothing like it exists anywhere in this app today, so it
+wasn't added here without being asked.
 
 ## PHI / name handling on `/api/analyze` — tried, reverted, revisit with care
 
@@ -518,6 +576,38 @@ package location. Bundling it (Turbopack/webpack) rewrites that path and breaks 
 Next.js to let Node resolve them straight from `node_modules` instead of bundling them.
 If PDF import ever breaks with a "fake worker"/module-not-found error again after a
 dependency bump, check that entry first before assuming the library itself regressed.
+
+**A second, related gotcha — this one only reproduces on Vercel, not locally.**
+PDF import worked fine in local dev and even in a local production build/start, but
+failed in the actual Vercel deployment with:
+```
+Warning: Cannot load "@napi-rs/canvas" package: Cannot find module '@napi-rs/canvas'
+Warning: Cannot polyfill `DOMMatrix`/`ImageData`/`Path2D`, rendering may be broken.
+Error: Failed to load external module pdf-parse-...: ReferenceError: DOMMatrix is not
+defined
+```
+Root cause: `pdfjs-dist`'s legacy Node build needs `DOMMatrix`/`ImageData`/`Path2D` —
+real browser APIs that don't exist in Node — and polyfills them at runtime via
+`@napi-rs/canvas`, a **native binary** package pulled in transitively by `pdf-parse`
+(not a direct dependency of this app). `@napi-rs/canvas` was missing from
+`serverExternalPackages`, so Next.js tried to trace/bundle it like a normal JS
+dependency for the Vercel serverless function — which doesn't work for a native addon,
+so it silently dropped out of the deployed bundle. It's present in `node_modules`
+locally (hence no local repro), but the deployed function's packaged `node_modules`
+didn't include it.
+
+Fixed the same way as the worker gotcha above — add it to `serverExternalPackages`
+(now `["pdf-parse", "pdfjs-dist", "@napi-rs/canvas"]`) — plus one more piece pdf-parse's
+own troubleshooting guide calls out specifically for serverless platforms: `import
+"pdf-parse/worker"` **before** `import { PDFParse } from "pdf-parse"` in
+`api/import-note/route.ts`, to register the worker before anything needs it. Verified
+locally (production build + `next start` + a real multipart PDF upload via `curl`) that
+extraction still works correctly after both changes — but since the actual failure mode
+only ever reproduced on Vercel's serverless packaging, not in any local environment,
+treat a real deploy as the only true confirmation; if PDF import ever breaks again in
+production specifically (not locally), a missing/incomplete `serverExternalPackages`
+entry for some native dependency is the first thing to check, not the extraction logic
+itself.
 
 ## Exporting suggested codes to a persistent Excel file
 
@@ -932,6 +1022,106 @@ is no existing field to also fill, unlike the per-field version.
 - Selecting the same code twice appends two separate rows (no dedup) — same as the
   existing manual "Add missed code" behavior, so this isn't a new inconsistency.
 
+## Diagnosis pointer hint — CMS-1500 Box 24E, coder-facing only (SummaryPanel and Suggested Codes)
+
+The CMS-1500 claim form lists diagnoses in Box 21, lettered A-L, and each service
+line's Box 24E ("diagnosis pointer") says which specific letter(s) justify *that*
+line's medical necessity — not "every diagnosis from the encounter," a specific
+subset per procedure. Coders currently do this mapping by hand, and the common
+failure mode is "shotgun pointering" — linking every diagnosis to every procedure
+"to be safe," which some payers reject or flag for review. This feature surfaces
+the AI's own understanding of that linkage as a read-only hint next to each
+procedure in `SummaryPanel.tsx`, so the coder has something to check against
+rather than reconstructing it from the note unaided.
+
+**Deliberately scoped to AI-generated procedures/diagnoses only.** A manually-added
+diagnosis or procedure (`AddCodeRow` in `CodesTable.tsx`) has no note text for the
+model to reason over, so there's nothing to link automatically — the coder handles
+that mapping themselves, same as they always have. This was an explicit product
+decision when scoping the feature, not an oversight: don't try to retrofit
+AI-style linking onto manual/Optum-added codes.
+
+**Deliberately a hint, not claim data.** `Procedure.linkedDiagnosisIds` drives a
+read-only display in both `SummaryPanel.tsx` and `CodesTable.tsx` (see below) — it
+is NOT synced into the Excel export or anywhere else a coder might mistake it for
+something already transcribed onto the real form. If this ever needs to feed into
+the Excel export, that's a deliberate scope expansion, not a small tweak — revisit
+the "hint only" framing explicitly before doing it (it was raised and intentionally
+deferred when this reached the Suggested Codes table, not an oversight).
+
+- **Data model**: `Procedure.linkedDiagnosisIds: string[]` (`types.ts`) — a list of
+  `Diagnosis.id`s, always present (empty array, never `undefined`/`null`), unlike
+  every other optional `Procedure` field. Referencing by id rather than by letter
+  position was a deliberate choice: letters are recomputed from `summary.diagnoses`'s
+  current order every render (see below), so an id survives a diagnosis being
+  edited; a stored letter wouldn't.
+- **Prompt**: a new `linkedDiagnosisIds` bullet in `SYSTEM_INSTRUCTION`
+  (`lib/openai.ts`), scoped per procedure — "only the diagnosis(es) THIS
+  procedure's own documentation ties it to," explicitly not the whole problem
+  list. Follows the same "never guess" discipline as `icd10Hint`/`cptHint`/
+  `modifier`: when the note doesn't clearly tie a procedure to a specific
+  diagnosis (e.g. a general visit addressing several unrelated problems with no
+  procedure-specific tie), the model leaves `linkedDiagnosisIds` empty for that
+  procedure and adds a `clarificationsNeeded` item instead of linking everything
+  "to be safe" — the same failure mode this feature exists to help the coder avoid,
+  so the model itself is held to not reproducing it.
+- **Two form-limit checks, both surfaced via `clarificationsNeeded`, not silently
+  enforced**: (1) CMS-1500 Box 21 only has room for 12 diagnoses (A-L) — if the
+  model identifies more, it adds a clarification noting the coder will need to
+  prioritize/consolidate. (2) Some payers cap diagnosis pointers at 4 per service
+  line — if a single procedure's documentation would need more than 4 linked
+  diagnoses to fully capture, that's flagged too, naming the procedure. Neither
+  check truncates anything automatically — truncating a genuinely-supported link
+  to satisfy a payer limit would be the model silently deciding something it
+  isn't positioned to decide; flagging it lets the coder make that call.
+- **Rendering in `SummaryPanel.tsx`**: `diagnosisPointers` is computed once per
+  render from `summary.diagnoses.slice(0, 12)` (`DiagnosisPointer[]`: id, letter,
+  condition) and passed down to every `ProcedureEditor`, which filters it against
+  its own `procedure.linkedDiagnosisIds` and renders a small teal badge row — "A
+  Type 2 diabetes...", "B Essential hypertension..." — only when at least one
+  diagnosis is linked (same "don't render an empty hint" pattern as the Modifier/
+  Units columns in `CodesTable.tsx`). Purely a derived display value, computed
+  fresh every render — there's no stored "letter" anywhere, so there's nothing to
+  keep in sync if diagnoses are edited.
+
+**Also surfaced in the Suggested Codes table** (`CodesTable.tsx`) — this is the
+table a coder actually works from/exports, so it's the more direct place to catch
+a pointer mistake, and it needed its own lettering pass rather than reusing
+`SummaryPanel`'s: `codesFromSummary()` (`page.tsx`) only turns a diagnosis/
+procedure into a row once it has an assigned code (`.filter((d) => d.icd10Hint)`),
+so the set of diagnoses actually visible in this table is a filtered, and
+potentially reordered-relative-to-`SummaryPanel`, subset — reusing
+`SummaryPanel`'s letters here would risk a procedure pointing at a letter with no
+matching row anywhere on screen, which is far more confusing inside "the
+deliverable table" than it would be in the full-detail Summary view. Instead:
+- `SuggestedCode.linkedDiagnosisIds?: string[]` (`types.ts`) — `codesFromSummary`
+  copies `procedure.linkedDiagnosisIds` onto the corresponding AI procedure row
+  (`undefined` when empty, matching the existing `modifier`/`units` optionality
+  convention on this type, rather than carrying an always-present empty array the
+  way `Procedure.linkedDiagnosisIds` itself does).
+- `computeDiagnosisLetters()` (`CodesTable.tsx`) assigns A-L to whichever `"ICD-10"`
+  rows are actually present in the live `codes` array, in table order — this
+  deliberately includes Manual- and Optum-sourced diagnosis rows too, not just AI
+  ones, since all of them would appear on the real claim's Box 21. Recomputed from
+  `codes` on every render, so it never drifts from what's on screen.
+- `resolveDxReference()` turns that map into what each row actually shows: a
+  diagnosis row shows its own letter; a procedure row shows its
+  `linkedDiagnosisIds` resolved through the map (prefixing back to the `ai-${id}`
+  row-id scheme `codesFromSummary` uses) and joined with commas — silently
+  dropping any linked diagnosis that doesn't resolve to a current row (i.e. it
+  still has no code yet) rather than showing a dangling reference. That link
+  reappears automatically, with no extra wiring, the moment the coder assigns that
+  diagnosis a code in the Summary step, since the map is recomputed from scratch
+  every render.
+- **UI**: a "Dx Ref" column (desktop table) / inline badge (mobile card), shown
+  only when at least one `"ICD-10"` row exists (`showDxReference` — same
+  conditional-column pattern as Modifier/Units). Color-coded for an at-a-glance
+  read: sky (matching the existing ICD-10 `TypeBadge` color) on a diagnosis row
+  itself — "this IS diagnosis A" — vs. teal (matching the `SummaryPanel` hint's
+  color) on a procedure row — "this points to A, B." A row with nothing to show
+  (a Manual/Optum procedure, or an AI procedure with no resolvable link) renders a
+  plain "—", not an empty cell, consistent with the Modifier/Units columns.
+
 ## Domain model quirks worth knowing
 
 - `Diagnosis.icd10Hint` and `Procedure.cptHint` — see "Codes are validated, not copied"
@@ -960,6 +1150,10 @@ is no existing field to also fill, unlike the per-field version.
   one visible code actually has one (`hasModifierOrUnits` in `CodesTable.tsx`) — this is
   the same "shown in UI if the details are present" pattern as collapsed Negations
   below, so a note with no modifiers/units doesn't grow two dash-filled columns.
+  `Procedure.linkedDiagnosisIds` is a related but separate field — see "Diagnosis
+  pointer hint" above — and, unlike `modifier`/`units`, has no `SuggestedCode`/
+  codes-table equivalent at all, since it only ever drives a read-only hint in
+  `SummaryPanel.tsx`.
 - `SuggestedCode.source` is `'AI' | 'Optum' | 'Manual'`. `'AI'` rows come from
   `codesFromSummary`, populated automatically on analyze. `'Optum'` rows come from
   either live Optum feature — the per-field search (`handleOptumCodeSelected`) or the
@@ -968,7 +1162,9 @@ is no existing field to also fill, unlike the per-field version.
   "API routes" above) since it never got past a `501` stub. `'Manual'` is a
   coder-typed addition (via `AddCodeRow`/`handleAddManual`); there's no default status
   attached to it — see "Reference-only tool" above, there is no `CodeStatus` concept
-  anymore.
+  anymore. `SuggestedCode.linkedDiagnosisIds` — see "Diagnosis pointer hint" above —
+  is the one field on this type only ever set by `codesFromSummary`, never by a
+  Manual or Optum addition.
 - `ClinicalSummary.briefSummary` — despite the name, this is a **crisp clinical
   impression, not a sentence**: a few words naming the primary diagnosis/complaint
   (e.g. "Lower back pain", "Type 2 diabetes with neuropathy"), the way a coder would
@@ -1019,6 +1215,90 @@ is no existing field to also fill, unlike the per-field version.
   the coder was trying to look at the result that just came back. Keep new
   error-reporting on this pattern rather than reintroducing a banner. Success toasts
   (`toast.success(...)`, e.g. after Export) use the same `Toaster` instance.
+
+## Step navigation and clarification visibility
+
+The whole app is a single continuous scroll — `page.tsx` renders the Note, Summary,
+and Codes sections all at once, in the same page, not as separate routes/tabs (see
+"Directory layout" — `(protected)/page.tsx` is one client component owning all
+top-level state). The `StepIndicator` pills in `Header.tsx` ("1 Note → 2 Summary →
+3 Codes") used to be purely a progress display with no interaction — they looked like
+wizard tabs but didn't behave like any, which was a real point of friction on a long
+note/summary, especially on mobile where the scroll distance between sections is
+largest.
+
+- **Jump-links, not a routed wizard**: `page.tsx`'s three top-level sections carry
+  `id`s (`note-section`, `summary-section`, `codes-section`) plus `scroll-mt-28` so
+  the sticky `Header` doesn't cover the top of whatever was jumped to; `StepIndicator`
+  renders each reachable step (`step <= currentStep`) as a plain `<a href="#...">`
+  around the existing pill, and `html { scroll-behavior: smooth }` (`globals.css`)
+  makes the jump glide rather than snap. The section-id ↔ step mapping is an implicit
+  contract between `StepIndicator.tsx` and `page.tsx` (a hardcoded `STEPS` array in
+  the former, not a prop) — if you ever rename one of those three container ids,
+  update the other file too, nothing will type-error to catch the mismatch. A step
+  that hasn't been reached yet (its section doesn't exist in the DOM — e.g. "Codes"
+  before a note has been analyzed) renders as the same pill with no `<a>` wrapper,
+  rather than linking to content that isn't there.
+- **Clarifications surfaced at three altitudes, not just buried in the field list**:
+  previously the only way to know a note needed review was scrolling past
+  Impression/Encounter/Diagnoses/Procedures/Negations to reach the "Needs
+  Clarification" section at the bottom of `SummaryPanel.tsx` — easy to miss on a long
+  summary, despite being the single most actionable output of an analysis. Now: (1) an
+  amber count badge on the Header's "Summary" step pill (`StepIndicator`'s
+  `clarificationsCount` prop, threaded from `page.tsx`'s
+  `summary.clarificationsNeeded.length`) is visible without even opening the panel;
+  (2) `SummaryPanel.tsx` itself gets an amber `border-l-4` accent on the whole card
+  when any exist, visible in peripheral vision before reading any content; (3) a
+  dismissal-free "`N` items need your review ↓" callout sits at the very top of the
+  panel, above Impression, linking (`href="#clarifications-section"`, a new `id` prop
+  on `FieldGroup`) straight down to the existing clarification list — which is
+  unchanged in place, still the authoritative, detailed version; the callout is a
+  second, earlier pointer to it, not a replacement.
+- **Keyboard affordances for a repeat-all-day power-user tool**: `SoapInput.tsx`'s
+  textarea has `autoFocus` (fires once on mount only, so it doesn't steal focus after
+  an analysis has already run) and a `Cmd`/`Ctrl+Enter` handler that triggers Analyze
+  directly from the textarea (guarded by the same `isEmpty`/`isAnalyzing` checks as
+  the button itself) — a coder pasting a note shouldn't need to reach for the mouse
+  just to click Analyze. The Analyze button's `title` attribute states the shortcut
+  for discoverability, since there's no other on-screen hint for it.
+
+## Admin's Workspace/Admin nav — pills, not plain text, and no name clash with the app's own branding
+
+Flagged directly: an admin couldn't tell at a glance whether "App"/"Admin" next to
+their username were clickable, and "App" was a confusing label sitting right next to
+the product's own name ("MediCode AI") in the logo a few inches to the left — easy to
+misread as referring to the whole product rather than "go to the main coding
+workspace."
+
+- **Renamed "App" → "Workspace"** — unambiguous, and no longer competes with the
+  product name for the same word. "Admin" was left as-is (it wasn't the part that was
+  confusing, and matches the `/admin` route).
+- **Real pill buttons, not hover-only text**: both links now go through a shared
+  `NavPill` helper in `Header.tsx` — a bordered pill at rest (`border-slate-200`,
+  visible without hovering) that fills solid teal when it's the current page, mirroring
+  the active/inactive visual language `StepIndicator` already established elsewhere in
+  this header. The previous version (`text-slate-500` with only a `hover:text-teal-700`
+  color shift) gave zero affordance that it was clickable at all when not actively
+  hovering — exactly what was reported.
+- **Active state needs to know which page is current**: `Header.tsx` is a Server
+  Component (no `"use client"`), so this couldn't use a client-only hook like
+  `usePathname()` without converting it. Instead, `HeaderProps` takes an explicit
+  `currentPage?: "app" | "admin"`, passed by each page that renders `Header`
+  (`(protected)/page.tsx` passes `"app"`, `(protected)/admin/page.tsx` passes
+  `"admin"`) — same pattern as `currentStep` already being an explicit prop rather than
+  derived from anything. If a third top-level page is ever added, extend this union
+  rather than reaching for a pathname hook.
+- **Separated from the account controls, not just from the step indicator.** A
+  follow-up question ("is this placement standard, and is it clearly grouped?")
+  surfaced that the Workspace/Admin nav and the account cluster (username/Settings/
+  Log out) sat in one undifferentiated `gap-3` row — easy to misread "Admin" as an
+  account action rather than a navigation destination. The `<nav>` now carries its own
+  `sm:border-l sm:pl-4` (the same divider treatment `StepIndicator` already gets),
+  independent of the account cluster's own matching divider — so on an admin's screen
+  there are three visually distinct groups in a row: step progress, page navigation,
+  account controls. For a non-admin, the `<nav>` doesn't render at all, so this is
+  purely additive — their header is unchanged (step progress, then one divider, then
+  account controls, exactly as before).
 
 ## Verifying changes
 

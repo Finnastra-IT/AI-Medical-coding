@@ -20,7 +20,7 @@ export default async function AdminPage() {
 
   return (
     <div className="flex min-h-screen flex-col bg-slate-50">
-      <Header user={admin} />
+      <Header user={admin} currentPage="admin" />
       <main className="mx-auto flex w-full max-w-7xl flex-1 flex-col gap-6 px-4 py-6 sm:px-6">
         <AdminUsersPanel />
       </main>

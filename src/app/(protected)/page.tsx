@@ -35,6 +35,10 @@ function codesFromSummary(summary: ClinicalSummary): SuggestedCode[] {
       source: "AI",
       modifier: procedure.modifier,
       units: procedure.units,
+      linkedDiagnosisIds:
+        procedure.linkedDiagnosisIds.length > 0
+          ? procedure.linkedDiagnosisIds
+          : undefined,
     }));
 
   return [...diagnosisCodes, ...procedureCodes];
@@ -148,13 +152,20 @@ export default function Home() {
     }
   }
 
+  const clarificationsCount = summary?.clarificationsNeeded.length ?? 0;
+
   return (
     <div className="flex min-h-screen flex-col bg-slate-50">
-      <Header currentStep={currentStep} user={user} />
+      <Header
+        currentStep={currentStep}
+        clarificationsCount={clarificationsCount}
+        currentPage="app"
+        user={user}
+      />
 
       <main className="mx-auto flex w-full max-w-7xl flex-1 flex-col gap-6 px-4 py-6 sm:px-6">
         <div className="flex flex-col gap-6 lg:flex-row">
-          <div className="flex flex-1 lg:w-1/2">
+          <div id="note-section" className="flex flex-1 scroll-mt-28 lg:w-1/2">
             <SoapInput
               value={soapNote}
               onChange={setSoapNote}
@@ -170,7 +181,10 @@ export default function Home() {
             />
           </div>
 
-          <div className="flex flex-1 lg:w-1/2">
+          <div
+            id="summary-section"
+            className="flex flex-1 scroll-mt-28 lg:w-1/2"
+          >
             {isAnalyzing ? (
               <SummaryPanelSkeleton />
             ) : (
@@ -184,15 +198,17 @@ export default function Home() {
         </div>
 
         {summary && (
-          <CodesTable
-            codes={codes}
-            isLoading={false}
-            caseId={caseId}
-            onCaseIdChange={setCaseId}
-            onAddManual={handleAddManual}
-            onAddFromOptum={handleAddFromOptum}
-            onExportExcel={handleExportExcel}
-          />
+          <div id="codes-section" className="scroll-mt-28">
+            <CodesTable
+              codes={codes}
+              isLoading={false}
+              caseId={caseId}
+              onCaseIdChange={setCaseId}
+              onAddManual={handleAddManual}
+              onAddFromOptum={handleAddFromOptum}
+              onExportExcel={handleExportExcel}
+            />
+          </div>
         )}
       </main>
     </div>

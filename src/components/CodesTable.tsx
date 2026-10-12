@@ -26,6 +26,46 @@ interface CodesTableProps {
 const hasModifierOrUnits = (codes: SuggestedCode[]) =>
   codes.some((code) => code.modifier !== undefined || code.units !== undefined);
 
+// CMS-1500 Box 21 letters (A-L) assigned to whichever ICD-10 rows are
+// actually in THIS table, in table order — includes Manual/Optum diagnosis
+// rows, not just AI ones, since all of them would appear on the real claim.
+// Recomputed from the live `codes` array every render, so it self-corrects
+// as rows are added — see AGENTS.md "Diagnosis pointer hint in Suggested
+// Codes".
+function computeDiagnosisLetters(codes: SuggestedCode[]): Map<string, string> {
+  const letters = new Map<string, string>();
+  let index = 0;
+  for (const code of codes) {
+    if (code.type !== "ICD-10") continue;
+    if (index >= 12) break;
+    letters.set(code.id, String.fromCharCode(65 + index));
+    index += 1;
+  }
+  return letters;
+}
+
+// For a diagnosis row, its own letter (e.g. "A"). For a procedure row, the
+// comma-joined letters of whichever `linkedDiagnosisIds` resolve to a
+// diagnosis row currently in the table — a diagnosis still missing a code
+// (so no row/letter exists yet) is silently omitted rather than shown as a
+// broken reference; it'll appear once the coder assigns that diagnosis a
+// code in the Summary step.
+function resolveDxReference(
+  code: SuggestedCode,
+  letters: Map<string, string>
+): string | undefined {
+  if (code.type === "ICD-10") {
+    return letters.get(code.id);
+  }
+  if (!code.linkedDiagnosisIds || code.linkedDiagnosisIds.length === 0) {
+    return undefined;
+  }
+  const resolved = code.linkedDiagnosisIds
+    .map((diagnosisId) => letters.get(`ai-${diagnosisId}`))
+    .filter((letter): letter is string => letter !== undefined);
+  return resolved.length > 0 ? resolved.join(", ") : undefined;
+}
+
 export default function CodesTable({
   codes,
   isLoading,
@@ -36,6 +76,10 @@ export default function CodesTable({
   onExportExcel,
 }: CodesTableProps) {
   const showModifierUnits = hasModifierOrUnits(codes);
+  const diagnosisLetters = computeDiagnosisLetters(codes);
+  // Only worth a column/line once there's at least one diagnosis to letter —
+  // with none, every row would show a blank "Dx Ref" regardless of type.
+  const showDxReference = codes.some((code) => code.type === "ICD-10");
   const hasCaseId = caseId.trim().length > 0;
   const hasCodes = codes.length > 0;
   const [showCaseIdHint, setShowCaseIdHint] = useState(false);
@@ -117,6 +161,14 @@ export default function CodesTable({
                     <th className="py-2 pr-3 font-medium">Units</th>
                   </>
                 )}
+                {showDxReference && (
+                  <th
+                    className="py-2 pr-3 font-medium"
+                    title="CMS-1500 Box 21/24E — a diagnosis row's own letter, or the diagnosis letter(s) a procedure is linked to"
+                  >
+                    Dx Ref
+                  </th>
+                )}
                 <th className="py-2 pr-3 font-medium">Source</th>
               </tr>
             </thead>
@@ -126,6 +178,11 @@ export default function CodesTable({
                   key={code.id}
                   code={code}
                   showModifierUnits={showModifierUnits}
+                  dxReference={
+                    showDxReference
+                      ? resolveDxReference(code, diagnosisLetters)
+                      : undefined
+                  }
                 />
               ))}
             </tbody>
@@ -142,7 +199,17 @@ export default function CodesTable({
             description="Add or look up a code below, or get suggestions from the button above."
           />
         ) : (
-          codes.map((code) => <CodeCard key={code.id} code={code} />)
+          codes.map((code) => (
+            <CodeCard
+              key={code.id}
+              code={code}
+              dxReference={
+                showDxReference
+                  ? resolveDxReference(code, diagnosisLetters)
+                  : undefined
+              }
+            />
+          ))
         )}
         <AddCodeRow onAdd={onAddManual} variant="card" />
         <OptumLookup onAdd={onAddFromOptum} variant="card" />
@@ -206,12 +273,38 @@ function SourceBadge({ source }: { source: SuggestedCode["source"] }) {
   );
 }
 
+function DxReferenceBadge({
+  dxReference,
+  isDiagnosis,
+}: {
+  dxReference: string;
+  isDiagnosis: boolean;
+}) {
+  // Sky (matches the ICD-10 TypeBadge color) on the diagnosis row itself —
+  // "this row IS diagnosis A." Teal (matches the Diagnosis Pointer hint in
+  // SummaryPanel.tsx) on a procedure row — "this points to A, B."
+  return (
+    <span
+      className={[
+        "inline-flex rounded-full border px-2 py-0.5 font-mono text-xs font-semibold",
+        isDiagnosis
+          ? "border-sky-200 bg-sky-50 text-sky-700"
+          : "border-teal-200 bg-teal-50 text-teal-700",
+      ].join(" ")}
+    >
+      {dxReference}
+    </span>
+  );
+}
+
 function CodeRow({
   code,
   showModifierUnits,
+  dxReference,
 }: {
   code: SuggestedCode;
   showModifierUnits: boolean;
+  dxReference?: string;
 }) {
   return (
     <tr className="border-b border-slate-100 align-top last:border-b-0">
@@ -230,6 +323,18 @@ function CodeRow({
           <td className="py-2.5 pr-3 text-slate-600">{code.units ?? "—"}</td>
         </>
       )}
+      {dxReference !== undefined && (
+        <td className="py-2.5 pr-3">
+          {dxReference ? (
+            <DxReferenceBadge
+              dxReference={dxReference}
+              isDiagnosis={code.type === "ICD-10"}
+            />
+          ) : (
+            <span className="text-slate-300">—</span>
+          )}
+        </td>
+      )}
       <td className="py-2.5 pr-3">
         <SourceBadge source={code.source} />
       </td>
@@ -237,7 +342,13 @@ function CodeRow({
   );
 }
 
-function CodeCard({ code }: { code: SuggestedCode }) {
+function CodeCard({
+  code,
+  dxReference,
+}: {
+  code: SuggestedCode;
+  dxReference?: string;
+}) {
   return (
     <div className="rounded-lg border border-slate-200 p-3">
       <p className="font-mono text-sm font-semibold text-slate-800">
@@ -256,6 +367,12 @@ function CodeCard({ code }: { code: SuggestedCode }) {
           <span className="text-xs text-slate-500">
             Units: <span className="font-mono">{code.units}</span>
           </span>
+        )}
+        {dxReference && (
+          <DxReferenceBadge
+            dxReference={dxReference}
+            isDiagnosis={code.type === "ICD-10"}
+          />
         )}
       </div>
     </div>

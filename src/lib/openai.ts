@@ -45,6 +45,7 @@ const openAiClinicalSummarySchema = z.object({
       codeType: z.enum(["CPT", "HCPCS", "E/M"]).nullable(),
       modifier: z.string().nullable(),
       units: z.number().nullable(),
+      linkedDiagnosisIds: z.array(z.string()),
     })
   ),
   negations: z.array(z.object({ id: z.string(), text: z.string() })),
@@ -230,6 +231,21 @@ verify rather than having it resolved silently. This applies to both "icd10Hint"
     repeated or multi-unit service (e.g. "3 trigger point injections",
     "60 minutes" for a service billed in 15-minute units → 4). null when the
     service was performed once (do not default this to 1).
+  - "linkedDiagnosisIds": the "id"(s) from "diagnoses" above that medically
+    justify performing THIS specific procedure — this powers a coder-facing
+    hint for CMS-1500 Box 24E (the "diagnosis pointer" that ties each billed
+    service line to the specific diagnosis/diagnoses that support its medical
+    necessity). This is NOT "every diagnosis from this encounter" — link only
+    the diagnosis(es) this particular procedure's own documentation ties it
+    to. A procedure addressing one specific problem (e.g. a joint injection
+    for a documented joint diagnosis) should usually link to just that one
+    diagnosis, not the patient's entire problem list. Only link what the
+    note's own documentation supports; when it's genuinely unclear which
+    diagnosis(es) a procedure is for — e.g. a general visit addressing
+    several unrelated problems at once with no procedure-specific tie —
+    leave "linkedDiagnosisIds" empty for that procedure rather than linking
+    everything "to be safe," and add a "clarificationsNeeded" item instead.
+    Empty array, never null, when nothing confidently links.
 - "negations": things the note explicitly says did NOT occur or were denied (e.g.
   "denies chest pain"), each with a short unique "id" (e.g. "neg-1"). Diagnostic
   uncertainty (an unconfirmed or differential diagnosis) is NOT a negation — that
@@ -244,11 +260,17 @@ verify rather than having it resolved silently. This applies to both "icd10Hint"
   "gout vs. cellulitis", "possible pneumonia, r/o other causes") — marking such a
   diagnosis's status as "suspected"/"differential" in its attributes is not a
   substitute for flagging it here, since the coder cannot finalize a code from an
-  unconfirmed diagnosis without knowing that. Do not add an item for minor
-  phrasing ambiguity or something you can reasonably infer — this list is for
-  real gaps, not hedging. Still give your best-effort analysis for every other
-  field regardless of any gap you flag here. Return an empty array when nothing
-  is genuinely unresolved.
+  unconfirmed diagnosis without knowing that. Also flag it here, separately from
+  any individual diagnosis/procedure issue, if: more than 12 diagnoses are
+  identified in total (CMS-1500 Box 21 can only list 12 — note that the coder
+  will need to prioritize or consolidate), or a single procedure's
+  "linkedDiagnosisIds" would need more than 4 entries to fully capture what its
+  documentation supports (some payers cap diagnosis pointers at 4 per claim
+  line) — state the specific procedure and how many diagnoses apply. Do not add
+  an item for minor phrasing ambiguity or something you can reasonably infer —
+  this list is for real gaps, not hedging. Still give your best-effort analysis
+  for every other field regardless of any gap you flag here. Return an empty
+  array when nothing is genuinely unresolved.
 
 Never include any person's name (patient, family member, or provider) anywhere in
 the output, even if one appears in the note — refer to people by role instead
