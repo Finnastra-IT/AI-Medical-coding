@@ -1,7 +1,14 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import toast from "react-hot-toast";
 import type { CodeType, SuggestedCode } from "@/lib/types";
+import {
+  clearStoredHandle,
+  hasStoredHandle,
+  isExcelExportSupported,
+} from "@/lib/excelExport";
+import { computeDiagnosisLetters, resolveDxReference } from "@/lib/dxReference";
 import EmptyState from "./EmptyState";
 import OptumLookup from "./OptumLookup";
 
@@ -18,53 +25,13 @@ interface CodesTableProps {
     units?: number
   ) => void;
   onAddFromOptum: (code: string, description: string, type: CodeType) => void;
-  onExportExcel: () => void;
+  onExportExcel: () => Promise<void>;
 }
 
 // Modifier/units only apply to CPT/HCPCS/E-M codes, never ICD-10 — see
 // AGENTS.md "Domain model quirks worth knowing".
 const hasModifierOrUnits = (codes: SuggestedCode[]) =>
   codes.some((code) => code.modifier !== undefined || code.units !== undefined);
-
-// CMS-1500 Box 21 letters (A-L) assigned to whichever ICD-10 rows are
-// actually in THIS table, in table order — includes Manual/Optum diagnosis
-// rows, not just AI ones, since all of them would appear on the real claim.
-// Recomputed from the live `codes` array every render, so it self-corrects
-// as rows are added — see AGENTS.md "Diagnosis pointer hint in Suggested
-// Codes".
-function computeDiagnosisLetters(codes: SuggestedCode[]): Map<string, string> {
-  const letters = new Map<string, string>();
-  let index = 0;
-  for (const code of codes) {
-    if (code.type !== "ICD-10") continue;
-    if (index >= 12) break;
-    letters.set(code.id, String.fromCharCode(65 + index));
-    index += 1;
-  }
-  return letters;
-}
-
-// For a diagnosis row, its own letter (e.g. "A"). For a procedure row, the
-// comma-joined letters of whichever `linkedDiagnosisIds` resolve to a
-// diagnosis row currently in the table — a diagnosis still missing a code
-// (so no row/letter exists yet) is silently omitted rather than shown as a
-// broken reference; it'll appear once the coder assigns that diagnosis a
-// code in the Summary step.
-function resolveDxReference(
-  code: SuggestedCode,
-  letters: Map<string, string>
-): string | undefined {
-  if (code.type === "ICD-10") {
-    return letters.get(code.id);
-  }
-  if (!code.linkedDiagnosisIds || code.linkedDiagnosisIds.length === 0) {
-    return undefined;
-  }
-  const resolved = code.linkedDiagnosisIds
-    .map((diagnosisId) => letters.get(`ai-${diagnosisId}`))
-    .filter((letter): letter is string => letter !== undefined);
-  return resolved.length > 0 ? resolved.join(", ") : undefined;
-}
 
 export default function CodesTable({
   codes,
@@ -83,6 +50,42 @@ export default function CodesTable({
   const hasCaseId = caseId.trim().length > 0;
   const hasCodes = codes.length > 0;
   const [showCaseIdHint, setShowCaseIdHint] = useState(false);
+  // Drives the "Change file" control — only worth showing once there's an
+  // actually-remembered file to change; before the first export there's
+  // nothing to reset (clicking "Export to Excel" itself already prompts).
+  const [hasStoredFile, setHasStoredFile] = useState(false);
+
+  useEffect(() => {
+    if (!isExcelExportSupported()) return;
+    let cancelled = false;
+    hasStoredHandle().then((stored) => {
+      if (!cancelled) setHasStoredFile(stored);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const handleExportClick = async () => {
+    if (!hasCaseId) {
+      setShowCaseIdHint(true);
+      return;
+    }
+    setShowCaseIdHint(false);
+    await onExportExcel();
+    // Re-check regardless of success/failure — a successful export may have
+    // just established a handle for the first time; a failed one changes
+    // nothing, so this just confirms the existing state.
+    if (isExcelExportSupported()) {
+      setHasStoredFile(await hasStoredHandle());
+    }
+  };
+
+  const handleChangeFile = async () => {
+    await clearStoredHandle();
+    setHasStoredFile(false);
+    toast.success("Forgot the remembered Excel file — the next export will ask you to pick one.");
+  };
 
   if (isLoading) {
     return <CodesTableSkeleton />;
@@ -119,14 +122,7 @@ export default function CodesTable({
           </div>
           <button
             type="button"
-            onClick={() => {
-              if (!hasCaseId) {
-                setShowCaseIdHint(true);
-                return;
-              }
-              setShowCaseIdHint(false);
-              onExportExcel();
-            }}
+            onClick={() => void handleExportClick()}
             disabled={!hasCodes}
             className={[
               "inline-flex items-center justify-center gap-2 rounded-lg px-3 py-1.5 text-xs font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-500 focus-visible:ring-offset-2",
@@ -139,6 +135,16 @@ export default function CodesTable({
           >
             Export to Excel
           </button>
+          {hasStoredFile && (
+            <button
+              type="button"
+              onClick={() => void handleChangeFile()}
+              title="Forget the remembered Excel file so the next export lets you pick a different one"
+              className="rounded-lg px-2 py-1.5 text-xs font-medium text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-500 focus-visible:ring-offset-2"
+            >
+              Change file
+            </button>
+          )}
         </div>
       </div>
 

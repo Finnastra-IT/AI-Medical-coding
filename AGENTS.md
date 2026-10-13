@@ -641,7 +641,32 @@ anything to the coder when they're scanning the spreadsheet later, so the field 
 specifically for the coder's own case/encounter number, typed by hand. Every appended
 row is tagged with this value plus an ISO export timestamp, so rows from different
 notes stay traceable in one sheet (columns: Case ID, Exported At, Code, Description,
-Type, Source, Modifier, Units).
+Type, Source, Modifier, Units, Dx Ref).
+
+**Dx Ref IS exported, revising the original "hint only, never in Excel" call** — see
+"Diagnosis pointer hint" above for that original reasoning (the concern was a bare
+letter like "A" being ambiguous once many different cases' rows sit in one running
+sheet). Revisited on request: every row already carries its own Case ID, so a
+letter only ever needs to be read in the context of its own row's Case ID, not
+globally across the whole file — the ambiguity concern doesn't actually hold up once
+you account for the column that's already there. `excelExport.ts` now computes this
+with the exact same `computeDiagnosisLetters`/`resolveDxReference` logic
+`CodesTable.tsx` uses on screen — both extracted into a shared `lib/dxReference.ts`
+specifically so the on-screen letters and the exported ones can never drift apart
+(they used to be two separate copies of the same logic before this change; don't
+reintroduce that duplication by inlining either side again).
+
+**A blank separator row is inserted between each export's batch of rows** (not
+before the very first batch ever written, and not when the file currently has only
+a header with zero data rows) — purely a readability aid so a coder scrolling
+through a file that's accumulated many cases can see at a glance where one case
+ends and the next begins. Implemented as a single `rows.push([])` in
+`appendCodesToExcelFile` before the new batch is appended, gated on
+`existingRows.length > 1` (header + at least one real data row already present).
+Confirmed via a standalone script exercising `XLSX.utils.aoa_to_sheet`/`write`/
+`read` directly (the usual approach here — the native file picker can't be driven
+by browser automation, see below) that a blank row round-trips correctly through a
+close-and-reopen cycle rather than being silently dropped by SheetJS.
 
 **Why this can only work in Chrome/Edge, and what that means in practice**: a web page
 cannot silently read/write an arbitrary file on the user's disk — the only browser
@@ -674,6 +699,95 @@ thing — this isn't a missed optimization.
 TypeScript's bundled `dom.d.ts` yet — see `lib/fileSystemAccess.d.ts` for the minimal
 ambient declarations this needed; extend that file rather than reaching for a
 third-party `@types` package if more of the API gets used later.
+
+**"Change file"**: until this was added, there was no way to pick a different file
+once one was remembered — short of a coder manually clearing their browser's site
+data, every export went to whatever file was chosen the very first time, forever.
+`clearStoredHandle()`/`hasStoredHandle()` in `excelExport.ts` back a small "Change
+file" button in `CodesTable.tsx`, shown next to "Export to Excel" **only when a
+handle is actually stored** (`hasStoredFile` state, checked via `hasStoredHandle()`
+in a mount-time `useEffect`, re-checked after every export attempt since a
+successful one may have just established a handle for the first time). Clicking it
+only deletes the stored `FileSystemFileHandle` reference from IndexedDB — it does
+**not** touch the actual file already on disk — so the next export call falls
+through `ensureFileHandle()`'s "no stored handle" branch and prompts again.
+`onExportExcel` had to change from `() => void` to `() => Promise<void>` for
+`CodesTable.tsx` to `await` it before re-checking stored-handle state;
+`handleExportExcel` in `page.tsx` was already `async`, so this was a type-signature
+correction, not a behavior change.
+
+**Which native picker that re-prompt uses changed after a real report**: a coder
+using "Change file" to re-point at the *same* file they'd already been using hit the
+browser's native "Replace?" confirmation — alarming-sounding (though actually
+harmless; see below) and confusing since they weren't trying to replace anything.
+Root cause: re-prompting always used `showSaveFilePicker()`, and browsers show that
+"Replace?" confirmation any time a Save dialog is pointed at a file that already
+exists — standard behavior in any desktop app, not specific to this feature, but
+unexpected here since the coder's intent was "keep using this file," not "overwrite
+it." (It's non-destructive either way — `appendCodesToExcelFile` always reads the
+file's existing rows before writing, so confirming "Replace" doesn't lose anything;
+the confusion was purely about the prompt's wording, not actual data loss.)
+
+Fixed by tracking one more bit of state, `EVER_HAD_HANDLE_KEY` in `excelExport.ts` —
+set the first time a handle is ever stored (`storeHandle`) and, critically, **never**
+cleared by `clearStoredHandle()` (unlike `HANDLE_KEY`, which that function does
+clear) — so `ensureFileHandle()` can tell "this coder has never done this before"
+apart from "they have before, the handle's just gone right now (cleared, or
+permission lapsed)":
+- **Never before** → `showSaveFilePicker()`, unchanged — needs the ability to
+  *create* a brand-new workbook, which only a Save dialog offers.
+- **Before, but no current handle** → `showOpenFilePicker()` instead (new
+  `OpenFilePickerOptions`/`Window.showOpenFilePicker` ambient types added to
+  `lib/fileSystemAccess.d.ts`). An Open dialog only selects *existing* files, so it
+  never shows a "Replace?" prompt — appropriate here, since by definition this
+  coder already has a file from before and is almost certainly re-pointing at it
+  (very likely that exact file) rather than starting fresh. One extra step a Save
+  dialog doesn't need: a handle from `showOpenFilePicker()` only carries *read*
+  permission by default (unlike `showSaveFilePicker()`, which grants readwrite
+  automatically since writing is the whole point of a save dialog) — so
+  `ensureFileHandle()` explicitly calls `handle.requestPermission({mode:
+  "readwrite"})` on it before use, or the later `createWritable()` would fail.
+
+**Trade-off, accepted deliberately**: a coder can no longer create a brand-new file
+through "Change file" once they've used this feature before — only re-attach to an
+existing one (an Open dialog has no "type a new filename" capability at all). If
+that's ever genuinely needed, the workaround is creating an empty `.xlsx` by hand
+first (Finder/Explorer, or any spreadsheet app), then picking it via "Change file."
+This was discussed and accepted as the right trade-off for fixing the much more
+common "I want to keep using my existing file" case — don't revert to always using
+`showSaveFilePicker()` to restore "create new" without re-solving the "Replace?"
+confusion some other way first.
+
+**A real gap in the first version of this fix — backfilling `EVER_HAD_HANDLE_KEY`
+for a handle that predates it.** The very first implementation only ever set that
+flag inside `storeHandle()`, so a coder whose stored handle came from *before* this
+fix shipped had a `codesFileHandle` but no `EVER_HAD_HANDLE_KEY` — and clicking
+"Change file" for the first time since the fix reproduced the exact "already exists,
+replace?" prompt the fix was meant to eliminate, because `hasEverHadHandle()` still
+read `false`. Two backfill points were needed, not one, since either of two
+different real sequences could hit this gap:
+- A normal export running before "Change file" is ever clicked →
+  `ensureFileHandle()`'s `if (stored)` branch now calls `markEverHadHandle()`
+  unconditionally whenever it finds an existing handle, regardless of whether the
+  flag was already set.
+- **"Change file" clicked as the very first action**, with no export in between
+  (the actual sequence that surfaced this) → `ensureFileHandle()`'s backfill never
+  gets a chance to run, since nothing calls it. Fixed by having
+  `clearStoredHandle()` *itself* (re-)set `EVER_HAD_HANDLE_KEY` before deleting
+  `HANDLE_KEY` — safe to do unconditionally because the UI only ever calls this
+  function when "Change file" is visible, which only happens when
+  `hasStoredHandle()` is true, so "this function is running at all" already proves
+  a handle existed a moment ago, independent of whether the flag had been set yet.
+
+One residual, accepted limitation: a coder who *already* hit this bug before the
+backfill landed — i.e., already clicked "Change file" under the broken version,
+leaving them with no handle AND no flag — is indistinguishable from "never used
+this feature" by the time the fix arrives; there's nothing left to backfill from.
+Their very next export still shows the Save picker one last time (and a "Replace?"
+prompt if they re-pick the same filename, safe to confirm as always), which
+re-establishes the flag — every "Change file" after that one catch-up export works
+correctly. Not worth engineering around further; it only affects whoever hit the
+original bug in the narrow window before this fix shipped.
 
 **A real testing limitation worth knowing**: `showSaveFilePicker()` opens a native
 OS-level file dialog that browser automation cannot drive or dismiss (the same
